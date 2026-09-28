@@ -1,0 +1,17 @@
+# DCS credentials: never commit
+authdata.bin
+network.vault
+*.vault
+
+# DCS output
+*.log
+out/
+
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+dist/
+*.egg-info/
