@@ -1,5 +1,3 @@
-# SPDX-License-Identifier: MIT
-# Copyright (c) 2026 YoloWingPixie
 from pathlib import Path
 
 import pytest

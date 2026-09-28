@@ -1,5 +1,3 @@
-# SPDX-License-Identifier: MIT
-# Copyright (c) 2026 YoloWingPixie
 """WSL <-> Windows path translation and DCS path resolution."""
 
 from __future__ import annotations

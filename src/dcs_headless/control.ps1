@@ -1,5 +1,3 @@
-# SPDX-License-Identifier: MIT
-# Copyright (c) 2026 YoloWingPixie
 # Windows side of dcs-headless. Every action writes one JSON document to stdout.
 # A process row is {pid, name, command, started (UTC, ISO 8601), parent}.
 #   List    DCS.exe processes

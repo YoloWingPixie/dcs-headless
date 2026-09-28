@@ -1,5 +1,3 @@
-# SPDX-License-Identifier: MIT
-# Copyright (c) 2026 YoloWingPixie
 import json
 
 import pytest
@@ -82,7 +80,7 @@ def test_list_processes_parses_recorded_output(paths, monkeypatch):
     assert procs[1].command == "" and procs[1].started is None
     assert procs[2].parent == EXPLORER_PID
     assert argvs[0][6] == "C:\\Users\\shepard\\Saved Games\\DCS.headless\\run\\control.ps1"
-    assert (paths.profile / "run" / "control.ps1").read_bytes().startswith(b"# SPDX-License-Identifier: MIT")
+    assert (paths.profile / "run" / "control.ps1").read_bytes().startswith(b"# Windows side of dcs-headless.")
     assert [p.pid for p in process.owned_processes(paths, procs)] == [LIVE_PID]
 
 
@@ -95,7 +93,7 @@ def test_control_script_is_rewritten_only_when_it_differs(paths, monkeypatch):
     assert script.stat().st_mtime_ns == mtime
     script.write_text("stale")
     process.list_processes(paths.profile)
-    assert script.read_bytes().startswith(b"# SPDX-License-Identifier: MIT")
+    assert script.read_bytes().startswith(b"# Windows side of dcs-headless.")
 
 
 def test_list_processes_empty_and_single_row(paths, monkeypatch):

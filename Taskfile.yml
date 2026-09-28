@@ -1,5 +1,8 @@
 version: '3'
 
+vars:
+  PROFILE: '{{.PROFILE | default "DCS.headless"}}'
+
 tasks:
   default:
     deps: [ci]
@@ -32,3 +35,43 @@ tasks:
       - task: setup
       - task: lint
       - task: test
+
+  paths:
+    desc: "Print resolved paths"
+    cmds:
+      - uv run dcs-headless paths {{.CLI_ARGS}}
+
+  prepare:
+    desc: "Create or reset the isolated profile (PROFILE=DCS.headless)"
+    cmds:
+      - uv run dcs-headless prepare --profile {{.PROFILE}} {{.CLI_ARGS}}
+
+  server:
+    desc: "Run a mission on a private server until Ctrl+C (MISSION=file.miz)"
+    prompt: Launch DCS headless? Close any running DCS first.
+    requires:
+      vars: [MISSION]
+    cmds:
+      - uv run dcs-headless run --until-stopped --mission "{{.MISSION}}" --profile {{.PROFILE}} --out out/server {{.CLI_ARGS}}
+
+  server:menu:
+    desc: "Run DCS at the menu, no mission, until Ctrl+C"
+    prompt: Launch DCS headless? Close any running DCS first.
+    cmds:
+      - uv run dcs-headless run --until-stopped --profile {{.PROFILE}} --out out/server-menu {{.CLI_ARGS}}
+
+  status:
+    desc: "State of the recorded DCS process"
+    cmds:
+      - uv run dcs-headless status --profile {{.PROFILE}} {{.CLI_ARGS}}
+
+  stop:
+    desc: "Stop the recorded DCS process and delete auth files"
+    cmds:
+      - uv run dcs-headless stop --profile {{.PROFILE}} {{.CLI_ARGS}}
+
+  smoke:
+    desc: "Launch DCS, wait for startup to finish, stop it"
+    prompt: Launch DCS headless? Close any running DCS first.
+    cmds:
+      - uv run dcs-headless run --wait-log '//=== END OF INIT =+//' --timeout 300 --profile {{.PROFILE}} --out out/smoke {{.CLI_ARGS}}

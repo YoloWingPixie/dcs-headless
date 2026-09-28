@@ -1,5 +1,3 @@
-# SPDX-License-Identifier: MIT
-# Copyright (c) 2026 YoloWingPixie
 """Poll for a run's completion condition: files, dcs.log patterns, timeout."""
 
 from __future__ import annotations
@@ -52,6 +50,7 @@ def wait_for(
     fail: list[re.Pattern[str]],
     timeout: float,
     stall_timeout: float | None = None,
+    until_stopped: bool = False,
     watch: Callable[[], str | None] | None = None,
     poll: float = 1.0,
     watch_every: float = 3.0,
@@ -61,7 +60,8 @@ def wait_for(
     """Succeed once every file exists and every ``ready`` pattern has matched a
     log line. Fail on the first log line matching a ``fail`` pattern, when
     ``watch()`` returns a reason, when the log gains no bytes for
-    ``stall_timeout`` seconds, or after ``timeout`` seconds."""
+    ``stall_timeout`` seconds, or after ``timeout`` seconds. With
+    ``until_stopped`` it never succeeds; only a failure ends it."""
     tail = LogTail(log)
     pending = list(ready)
     start = clock()
@@ -76,7 +76,7 @@ def wait_for(
             if line.strip():
                 last_line = line.strip()
         missing = [str(f) for f in files if not f.exists()]
-        if not pending and not missing:
+        if not until_stopped and not pending and not missing:
             return Outcome(True, "condition met")
         now = clock()
         if tail.offset != last_offset:

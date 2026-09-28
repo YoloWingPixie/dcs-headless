@@ -1,5 +1,3 @@
-# SPDX-License-Identifier: MIT
-# Copyright (c) 2026 YoloWingPixie
 """Copy DCS login files into the isolated profile and remove them again.
 
 File contents are never read into Python strings or logged.

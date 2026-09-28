@@ -1,5 +1,3 @@
-# SPDX-License-Identifier: MIT
-# Copyright (c) 2026 YoloWingPixie
 import re
 
 from dcs_headless.wait import LogTail, Outcome, wait_for
@@ -149,3 +147,16 @@ def test_log_tail_handles_truncation_and_split_utf8(tmp_path):
     assert tail.new_lines() == ["café line"]
     log.write_text("new\n")
     assert tail.new_lines() == ["new"]
+
+
+def test_until_stopped_ends_only_on_failure(tmp_path):
+    log = tmp_path / "dcs.log"
+    clock = Clock({1: lambda: append(log, LOG_LINES[0])})
+    calls = []
+
+    def watch():
+        calls.append(clock.now)
+        return "DCS exited" if len(calls) == 500 else None
+
+    outcome = run(tmp_path, clock, timeout=float("inf"), until_stopped=True, watch=watch, poll=1.0, watch_every=1.0)
+    assert outcome == Outcome(False, "DCS exited") and clock.now >= 500

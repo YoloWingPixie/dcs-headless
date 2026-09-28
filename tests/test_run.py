@@ -1,5 +1,3 @@
-# SPDX-License-Identifier: MIT
-# Copyright (c) 2026 YoloWingPixie
 """Auth copy/deletion, the library ``run()`` and the CLI against a fake Windows."""
 
 import dataclasses
@@ -362,12 +360,13 @@ def test_library_contract():
         "wait_file": None,
         "wait_log": None,
         "fail_log": None,
-        "timeout": 600.0,
-        "stall_timeout": 120.0,
+        "timeout": None,
+        "stall_timeout": None,
         "install_dir": None,
         "auth_from": None,
         "options_template": None,
         "mission": None,
+        "until_stopped": False,
     }
     assert [f.name for f in dataclasses.fields(Paths)] == ["install", "auth_profile", "profile"]
     assert {name: p.default for name, p in inspect.signature(resolve).parameters.items()} == {
@@ -464,3 +463,89 @@ def test_run_refuses_bad_mission(env, tmp_path, hooks, windows, name):
     assert not env.profile.exists()
     assert run_cli(env, tmp_path, hooks, "--mission", str(tmp_path / name)) == 1
     assert windows.calls == []
+
+
+# --- until stopped ---------------------------------------------------------------------
+
+
+def serve(env, tmp_path, *extra):
+    return cli.main(["run", "--until-stopped", "--out", str(tmp_path / "out"), *extra])
+
+
+def after_launch(env, windows, on_tasklist, line="INFO    Dispatcher (Main): //=== END OF INIT ===//\n"):
+    def launched():
+        dcs_writes(env, line, marker=False)()
+        windows.on_tasklist = on_tasklist
+
+    windows.on_launch = launched
+
+
+@pytest.mark.parametrize("signum", [signal.SIGINT, signal.SIGTERM])
+def test_until_stopped_runs_until_signal(env, tmp_path, windows, miz, signum):
+    """The log stops growing and no timeout applies; a signal stops DCS and cleans up."""
+    after_launch(env, windows, lambda n: os.kill(os.getpid(), signum) if n == 30 else None)
+    assert serve(env, tmp_path, "--mission", str(miz)) == 128 + signum
+    assert windows.tasklists >= 30
+    r = result(tmp_path)
+    assert not r["ok"] and r["reason"] == f"interrupted by signal {signal.Signals(signum).name}"
+    assert r["elapsed_seconds"] >= 0 and r["cleanup_errors"] == []
+    assert windows.actions() == ["Launch", "Stop"] and windows.procs == []
+    assert auth_left(env.profile) == []
+    assert "net.start_server(settings)" in (env.profile / "Scripts" / "dedicatedServer.lua").read_text()
+
+
+def test_until_stopped_dcs_exiting_fails_run(env, tmp_path, windows):
+    after_launch(env, windows, lambda n: windows.procs.clear() if n == 10 else None)
+    assert serve(env, tmp_path) == 1
+    assert result(tmp_path)["reason"] == "DCS exited"
+    assert "Stop" not in windows.actions()
+    assert auth_left(env.profile) == []
+
+
+def test_until_stopped_fail_log_applies(env, tmp_path, windows):
+    after_launch(env, windows, None, line="ERROR   Lua::Config (Main): hook crashed\n")
+    assert serve(env, tmp_path, "--fail-log", "hook crashed") == 1
+    assert "hook crashed" in result(tmp_path)["reason"]
+    assert windows.actions()[-1] == "Stop" and windows.procs == []
+    assert auth_left(env.profile) == []
+
+
+def test_until_stopped_foreign_dcs_aborts(env, tmp_path, windows):
+    after_launch(env, windows, lambda n: windows.procs.append(USER_GAME) if n == 5 else None)
+    assert serve(env, tmp_path) == 1
+    assert result(tmp_path)["reason"] == "another DCS started (PID 41236); aborting"
+    assert windows.stopped() == [LIVE_PID] and windows.procs == [USER_GAME]
+    assert auth_left(env.profile) == []
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [["--wait-log", "END OF INIT"], ["--wait-file", WAIT], ["--timeout", "600"], ["--stall-timeout", "0"]],
+)
+def test_until_stopped_rejects_conditions_and_limits(env, tmp_path, windows, extra):
+    assert serve(env, tmp_path, *extra) == 1
+    assert windows.calls == [] and windows.tasklists == 0
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "match"),
+    [({"wait_log": "x"}, "no wait_file"), ({"timeout": 600}, "no timeout"), ({"stall_timeout": 0}, "no timeout")],
+)
+def test_library_until_stopped_rejects(env, tmp_path, windows, kwargs, match):
+    with pytest.raises(HeadlessError, match=match):
+        dcs_headless.run(out=tmp_path / "out", until_stopped=True, **kwargs)
+    assert windows.calls == []
+
+
+def test_stall_timeout_zero_disables_stall(env, tmp_path, windows, monkeypatch):
+    seen = {}
+
+    def fake_wait(**kw):
+        seen.update(kw)
+        return runner.Outcome(True, "condition met")
+
+    monkeypatch.setattr(runner, "wait_for", fake_wait)
+    assert cli.main(["run", "--out", str(tmp_path / "out"), "--wait-file", WAIT, "--stall-timeout", "0"]) == 0
+    assert seen["timeout"] == 600.0 and seen["stall_timeout"] == 0
+    assert cli.main(["run", "--out", str(tmp_path / "out"), "--wait-file", WAIT]) == 0
+    assert seen["stall_timeout"] == 120.0

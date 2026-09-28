@@ -1,5 +1,3 @@
-# SPDX-License-Identifier: MIT
-# Copyright (c) 2026 YoloWingPixie
 """dcs-headless command line."""
 
 from __future__ import annotations
@@ -32,11 +30,12 @@ def cmd_run(args: argparse.Namespace) -> int:
             wait_log=args.wait_log,
             fail_log=args.fail_log,
             timeout=args.timeout,
-            stall_timeout=args.stall_timeout or None,
+            stall_timeout=args.stall_timeout,
             install_dir=args.install_dir,
             auth_from=args.auth_from,
             options_template=args.options_template,
             mission=args.mission,
+            until_stopped=args.until_stopped,
         )
     except Interrupted as exc:
         assert exc.result is not None
@@ -161,12 +160,16 @@ def _parser() -> argparse.ArgumentParser:
         metavar="REGEX",
         help="regex that fails the run when a dcs.log line matches (repeatable)",
     )
-    run_p.add_argument("--timeout", type=float, default=600.0, help="seconds to wait after launch (default: 600)")
+    run_p.add_argument("--timeout", type=float, help="seconds to wait after launch (default: 600)")
     run_p.add_argument(
         "--stall-timeout",
         type=float,
-        default=120.0,
         help="fail when dcs.log gains no bytes for this many seconds; 0 disables (default: 120)",
+    )
+    run_p.add_argument(
+        "--until-stopped",
+        action="store_true",
+        help="run until Ctrl+C/SIGTERM or DCS exits; no --wait-*, --timeout or --stall-timeout",
     )
     sub.add_parser("status", parents=[common], help="state of the recorded DCS process")
     sub.add_parser("stop", parents=[common], help="stop the recorded DCS process and delete auth files")

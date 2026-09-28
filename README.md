@@ -70,8 +70,9 @@ All commands take `--install-dir`, `--auth-from` and `--profile`.
 | `--fail-log REGEX` | run | fails the run on a matching line; repeatable |
 | `--timeout S` | run | default 600 |
 | `--stall-timeout S` | run | fail if `dcs.log` doesn't grow for S seconds; default 120, 0 disables |
+| `--until-stopped` | run | run until stopped; no `--wait-*`, `--timeout` or `--stall-timeout`; see [Running a server](#running-a-server) |
 
-`run` needs at least one `--wait-file` or `--wait-log`. It succeeds once every
+`run` needs at least one `--wait-file` or `--wait-log`, or `--until-stopped`. It succeeds once every
 wait file exists and every wait regex has matched. It fails on a `--fail-log`
 match, a stall, a timeout, DCS exiting, or another `DCS.exe` starting.
 
@@ -120,12 +121,14 @@ dump = result.profile / "DCS.Lua.Exporter" / "_G"
 
 ```python
 run(*, profile="DCS.headless", hooks=(), out, wait_file=None, wait_log=None,
-    fail_log=None, timeout=600, stall_timeout=120, install_dir=None,
-    auth_from=None, options_template=None, mission=None) -> RunResult
+    fail_log=None, timeout=None, stall_timeout=None, install_dir=None,
+    auth_from=None, options_template=None, mission=None,
+    until_stopped=False) -> RunResult
 ```
 
 `wait_file`, `wait_log` and `fail_log` take a string or a list of strings.
-`stall_timeout=None` or `0` disables the stall check.
+`timeout=None` means 600 s and `stall_timeout=None` 120 s; `stall_timeout=0`
+disables the stall check.
 
 `RunResult`:
 
@@ -144,7 +147,8 @@ Errors:
 - `HeadlessError` is raised before launch for: DCS already running, bad or
   reserved profile name, existing profile without the `.dcs-headless` marker,
   install not found, missing hook or `options.lua`, duplicate hook names,
-  mission not an existing `.miz`, no wait condition, bad regex, wait file
+  mission not an existing `.miz`, no wait condition, a wait condition,
+  `timeout` or `stall_timeout` with `until_stopped`, bad regex, wait file
   outside the profile.
 - If a `DCS.exe` appears between prepare and launch, `run` cleans up, writes
   `result.json` and raises `DcsRunning` (a `HeadlessError`).
@@ -193,6 +197,37 @@ If `net.start_server` fails, the script logs
 `DCS_HEADLESS ... net.start_server failed with code N` and the run fails on
 that line. Hooks get `onSimulationStart` once the mission is running.
 
+## Running a server
+
+`run --until-stopped` keeps DCS running until you stop it. There is no
+timeout or stall check; `--wait-file`, `--wait-log`, `--timeout` and
+`--stall-timeout` are refused. `--fail-log` still applies.
+
+- Ctrl+C or SIGTERM: stops DCS, cleans up, exits 128+N (`Interrupted` in the
+  library). This is the normal way to end it.
+- DCS exits on its own: `ok=false`, reason `DCS exited`, exit 1.
+- A `--fail-log` match or another `DCS.exe` starting: our DCS is stopped, exit 1.
+
+`result.json` is written on every path. In the library, a call from a thread
+other than the main one installs no signal handlers, so only DCS exiting, a
+`fail_log` match or another DCS ends it.
+
+Tasks (`PROFILE` defaults to `DCS.headless`; arguments after `--` are passed
+to `dcs-headless`):
+
+```sh
+task server MISSION=/path/to/mission.miz   # mission on the private server, out/server
+task server:menu                           # DCS at the menu, for hook testing, out/server-menu
+task status
+task stop
+task smoke                                 # launch, wait for startup, stop; out/smoke
+task prepare -- --hook my-hook.lua
+```
+
+`server`, `server:menu` and `smoke` ask before launching. `smoke` waits up to
+300 s for `//=== END OF INIT ===...//` in `dcs.log`, which DCS writes once
+after startup, with or without a mission.
+
 ## Auth files
 
 `authdata.bin` and `network.vault` are copied from the source profile into
@@ -231,6 +266,9 @@ task lint    # ruff check + format check
 task fmt     # ruff fix + format
 task ci      # setup, lint, test
 ```
+
+`task paths`, `prepare`, `status`, `stop`, `server`, `server:menu` and `smoke`
+wrap the CLI; see [Running a server](#running-a-server).
 
 ## License
 

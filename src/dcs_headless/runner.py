@@ -1,10 +1,9 @@
-# SPDX-License-Identifier: MIT
-# Copyright (c) 2026 YoloWingPixie
 """One headless run: prepare, launch, wait, stop, clean up."""
 
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import shutil
@@ -25,6 +24,8 @@ from .wait import Outcome, wait_for
 
 POLL_SECONDS = 1.0
 WATCH_SECONDS = 3.0
+DEFAULT_TIMEOUT = 600.0
+DEFAULT_STALL = 120.0
 
 
 @dataclass(frozen=True)
@@ -130,12 +131,13 @@ def run(
     wait_file: str | Sequence[str] | None = None,
     wait_log: str | Sequence[str] | None = None,
     fail_log: str | Sequence[str] | None = None,
-    timeout: float = 600.0,
-    stall_timeout: float | None = 120.0,
+    timeout: float | None = None,
+    stall_timeout: float | None = None,
     install_dir: str | Path | None = None,
     auth_from: str | Path | None = None,
     options_template: Path | str | None = None,
     mission: Path | str | None = None,
+    until_stopped: bool = False,
 ) -> RunResult:
     """Prepare the isolated profile, launch DCS headless, wait for the condition,
     stop DCS, copy dcs.log and write ``result.json`` to ``out``, delete the auth files.
@@ -147,6 +149,14 @@ def run(
     ``mission`` (a .miz) is copied into the profile's ``Missions/`` and started by
     a private dedicated server, so a map is loaded; the run fails if the server
     reports that it could not start. Without it no server or mission starts.
+
+    ``timeout`` defaults to 600 s and ``stall_timeout`` to 120 s; a
+    ``stall_timeout`` of 0 disables the stall check.
+
+    ``until_stopped`` keeps DCS running with no wait condition, timeout or stall
+    check (giving any of them is an error). Only a signal (Interrupted), a
+    ``fail_log`` match, DCS exiting (``ok=False``, "DCS exited") or another DCS
+    starting ends it.
     """
     ready = _regexes(_as_list(wait_log), "wait_log")
     fail = _regexes(_as_list(fail_log), "fail_log")
@@ -155,8 +165,12 @@ def run(
         check_mission(mission_path)
         fail.append(re.compile(START_FAILED_REGEX))
     wait_rel = _as_list(wait_file)
-    if not wait_rel and not ready:
-        raise HeadlessError("give at least one wait_file or wait_log")
+    if until_stopped and (wait_rel or ready):
+        raise HeadlessError("until_stopped takes no wait_file or wait_log")
+    if until_stopped and (timeout is not None or stall_timeout is not None):
+        raise HeadlessError("until_stopped takes no timeout or stall_timeout")
+    if not until_stopped and not wait_rel and not ready:
+        raise HeadlessError("give at least one wait_file or wait_log, or until_stopped")
     out = Path(out)
 
     paths = resolve(install_dir, auth_from, profile)
@@ -190,8 +204,9 @@ def run(
                 log=paths.profile / "Logs" / "dcs.log",
                 ready=ready,
                 fail=fail,
-                timeout=timeout,
-                stall_timeout=stall_timeout,
+                timeout=math.inf if until_stopped else DEFAULT_TIMEOUT if timeout is None else timeout,
+                stall_timeout=None if until_stopped else DEFAULT_STALL if stall_timeout is None else stall_timeout,
+                until_stopped=until_stopped,
                 watch=tracker.check,
                 poll=POLL_SECONDS,
                 watch_every=WATCH_SECONDS,

@@ -1,5 +1,3 @@
-# SPDX-License-Identifier: MIT
-# Copyright (c) 2026 YoloWingPixie
 """Launch, identify, watch and stop our DCS process.
 
 PowerShell (control.ps1) is used for launching, listing with command lines and

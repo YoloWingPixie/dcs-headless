@@ -1,5 +1,3 @@
-# SPDX-License-Identifier: MIT
-# Copyright (c) 2026 YoloWingPixie
 """A fake /mnt tree with a DCS install and user profile, and a fake PowerShell."""
 
 from __future__ import annotations
