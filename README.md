@@ -1,42 +1,28 @@
 # dcs-headless
 
-Runs DCS World without rendering (`--norender`) from WSL, in an isolated Saved
-Games profile, until a caller-specified condition is met, then stops it. Meant
-for automation that installs a GameGUI hook, lets DCS load, and collects what
-the hook writes.
+Runs DCS World from WSL with `--norender` in a separate Saved Games profile,
+waits for a condition (a file appears, a `dcs.log` line matches), then stops
+DCS. Built for GameGUI hooks that dump data once DCS has loaded.
 
-DCS always runs as `<install>\bin-mt\DCS.exe -w <profile> --server --norender`
-with a no-op `Scripts/dedicatedServer.lua`, so no mission or map is loaded;
-with `--mission FILE.miz` it starts that mission on a private server instead
-(see [Mission runs](#mission-runs)). Client mode is not supported: its login
-dialog is invisible when headless, and server mode loads everything a GameGUI
-hook needs.
+DCS is started as:
 
-A run:
+```
+<install>\bin-mt\DCS.exe -w <profile> --server --norender
+```
 
-1. Refuses to start if any `DCS.exe` is running.
-2. Creates or resets the isolated profile (see [Profile](#profile)).
-3. Copies `authdata.bin` and `network.vault` from your real profile.
-4. In one PowerShell call: checks again that no `DCS.exe` runs, launches DCS
-   through the Windows desktop shell, and records the PID and start time of
-   the new process whose command line matches.
-5. Waits until every `--wait-file` exists and every `--wait-log` regex has
-   matched a `dcs.log` line. It fails early when a `--fail-log` regex matches,
-   when `dcs.log` gains no bytes for `--stall-timeout` seconds, when our DCS
-   exits, when another `DCS.exe` appears, or at `--timeout`.
-6. Stops our DCS process(es), copies `Logs/dcs.log` to `--out`, deletes the
-   auth files, and writes `--out/result.json`.
+Server mode only. By default `Scripts/dedicatedServer.lua` is a no-op, so DCS
+sits at the menu with no map loaded. `--mission` loads one (see
+[Missions](#missions)).
 
 ## Requirements
 
-- WSL 2 with Windows interop (`powershell.exe` callable from WSL).
-- A Windows DCS World install on a drive mounted under `/mnt/<drive>`.
-- A DCS profile you have logged in with, holding `Config/authdata.bin` and
-  `Config/network.vault`.
-- An unlocked Windows desktop session: DCS is started through the desktop
-  shell (`Shell.Application`) so it runs as the logged-in user.
-- Python 3.12, [uv](https://docs.astral.sh/uv/), and optionally
-  [Task](https://taskfile.dev).
+- WSL 2 with Windows interop (`powershell.exe` and `tasklist.exe` on the PATH).
+- DCS World installed on a Windows drive (`/mnt/<drive>`).
+- A DCS profile you have logged in with: `Config/authdata.bin`,
+  `Config/network.vault` and `Config/options.lua`.
+- A logged-in, unlocked Windows desktop. DCS is launched through
+  `Shell.Application` so it runs as you.
+- Python 3.12+ and [uv](https://docs.astral.sh/uv/). [Task](https://taskfile.dev) is optional.
 
 ## Install
 
@@ -47,90 +33,59 @@ uv sync
 uv run dcs-headless paths
 ```
 
-Or install the command: `uv tool install .`
+Or `uv tool install .` to get `dcs-headless` on the PATH.
 
 ## Paths
 
-| Setting | Flag | Environment | Default |
+| Setting | Flag | Env | Default |
 | --- | --- | --- | --- |
-| DCS install | `--install-dir` | `DCS_INSTALL_DIR` | first of `DCS World OpenBeta`, `DCS World`, `Program Files/Eagle Dynamics/...`, Steam and `Games/...` locations under `/mnt/<drive>` that contains `bin-mt/DCS.exe` |
-| Auth source profile (auth files, `options.lua`) | `--auth-from` | `DCS_HEADLESS_AUTH_FROM` | first `Saved Games/DCS.openbeta` or `Saved Games/DCS` under `/mnt/<drive>/Users/<user>` holding `Config/authdata.bin` |
-| Isolated profile name | `--profile` | | `DCS.headless` |
+| DCS install | `--install-dir` | `DCS_INSTALL_DIR` | first `DCS World OpenBeta`, `DCS World`, `Program Files/Eagle Dynamics/...`, Steam or `Games/...` dir under `/mnt/<drive>` with `bin-mt/DCS.exe` |
+| Source profile | `--auth-from` | `DCS_HEADLESS_AUTH_FROM` | first `Users/<user>/Saved Games/DCS.openbeta` or `.../DCS` with `Config/authdata.bin` |
+| Isolated profile | `--profile` | | `DCS.headless` |
 
-Windows paths (`D:\DCS World OpenBeta`) and WSL paths are both accepted. The
-isolated profile is created next to the auth source profile, in the same
-Saved Games directory. `dcs-headless paths` prints the resolved values as JSON.
+Windows (`D:\DCS World`) and WSL paths both work. The isolated profile is
+created next to the source profile. `dcs-headless paths` prints the resolved
+paths as JSON.
 
-## Usage
+## CLI
 
 ```
 dcs-headless paths                 print resolved paths
 dcs-headless prepare [options]     create or reset the isolated profile
 dcs-headless run --out DIR ...     prepare, launch, wait, stop, clean up
 dcs-headless status                state of the recorded DCS process
-dcs-headless stop                  stop the recorded process, delete auth files
+dcs-headless stop                  stop the recorded DCS process, delete auth files
 ```
 
-`prepare` and `run` take `--hook FILE` (repeatable), `--options-template
-FILE` and `--mission FILE.miz`. `run` also takes `--wait-file REL`, `--wait-log REGEX`, `--fail-log
-REGEX` (all repeatable; at least one wait condition is required), `--timeout
-SECONDS` (default 600) and `--stall-timeout SECONDS` (default 120, 0 disables).
-Regexes are matched against single `dcs.log` lines. `--wait-file` paths are
-relative to the isolated profile and are deleted before launch, so a file left
-by an earlier run cannot satisfy the condition. A stall fails with the last
-`dcs.log` line in the reason, e.g. `dcs.log stalled: no new output for 120s;
-last line: ...`.
+All commands take `--install-dir`, `--auth-from` and `--profile`.
 
-Exit status of `run`: 0 when the condition was met and cleanup succeeded,
-1 otherwise, 128 + signal number when interrupted. `result.json` holds the
-`RunResult` fields below.
+| Flag | Commands | |
+| --- | --- | --- |
+| `--hook FILE` | prepare, run | install into `Scripts/Hooks/`; repeatable |
+| `--options-template FILE` | prepare, run | use instead of the source profile's `options.lua` |
+| `--mission FILE.miz` | prepare, run | start this mission on a private server |
+| `--out DIR` | run | required; gets `dcs.log` and `result.json` |
+| `--wait-file REL` | run | file relative to the profile that must exist; deleted before launch; repeatable |
+| `--wait-log REGEX` | run | must match a `dcs.log` line; repeatable |
+| `--fail-log REGEX` | run | fails the run on a matching line; repeatable |
+| `--timeout S` | run | default 600 |
+| `--stall-timeout S` | run | fail if `dcs.log` doesn't grow for S seconds; default 120, 0 disables |
 
-## Library API
+`run` needs at least one `--wait-file` or `--wait-log`. It succeeds once every
+wait file exists and every wait regex has matched. It fails on a `--fail-log`
+match, a stall, a timeout, DCS exiting, or another `DCS.exe` starting.
 
-```python
-from pathlib import Path
-from dcs_headless import run, RunResult, HeadlessError
-from dcs_headless.paths import resolve, Paths
+`run` prints the result as JSON and writes the same to `--out/result.json`.
 
-result: RunResult = run(
-    profile="DCS.datamine",
-    hooks=[Path("tools/datamine/hook/dump-globals.lua"), Path("tools/datamine/hook/serialize.lua")],
-    out=Path("out/datamine"),
-    wait_file="DCS.Lua.Exporter/_G/__DCS_VERSION__.lua",
-    fail_log="Export aborted|records failed",
-    timeout=600,
-    stall_timeout=120,
-)
-if not result.ok:
-    raise SystemExit(f"datamine failed: {result.reason}")
-dump = result.profile / "DCS.Lua.Exporter" / "_G"
-```
+Exit status: 0 when the condition was met and cleanup was clean, 1 when the
+run failed or was refused (message on stderr), 128+N when interrupted by
+signal N (cleanup still runs).
 
-`run(profile="DCS.headless", hooks=(), out, wait_file=None, wait_log=None,
-fail_log=None, timeout=600, stall_timeout=120, install_dir=None,
-auth_from=None, options_template=None, mission=None) -> RunResult`. `wait_file`,
-`wait_log` and `fail_log` take a string or a list of strings.
+`stop` exits 1 if a process is still running or the auth files could not be
+deleted.
 
-`RunResult`: `ok: bool`, `reason: str`, `profile: Path`, `pid: int | None`,
-`elapsed_seconds: float`, `log: Path | None` (the copy in `out`),
-`cleanup_errors: list[str]`.
-
-Refusals raise `HeadlessError` before anything is launched: DCS already
-running, invalid or unmarked profile, main profile, missing install, missing
-hook or `options.lua`, mission that is not an existing `.miz`, bad wait
-condition. A run that starts and fails
-returns `ok=False`. SIGINT/SIGTERM/SIGHUP (main thread only) raise
-`dcs_headless.Interrupted` after cleanup, with the result in `.result`.
-
-`resolve(install_dir=None, auth_from=None, profile="DCS.headless") -> Paths`
-returns `install`, `exe`, `auth_profile`, `saved_games` and `profile` without
-touching anything.
-
-### Example: dcs-world-schema datamine
-
-The dcs-world-schema `_G` dump hook writes `DCS.Lua.Exporter/_G/` in the
-profile it runs in and writes `__DCS_VERSION__.lua` there last. `task
-datamine` in dcs-world-schema calls `run()` as above; the CLI equivalent is:
+Example (the dcs-world-schema `_G` dump, which `task datamine` there runs via
+the library):
 
 ```sh
 SCHEMA=../dcs-world-schema
@@ -143,151 +98,140 @@ uv run dcs-headless run \
   --out ./out/datamine
 ```
 
-## Mission runs
-
-Without a mission, DCS reaches the main menu with no terrain loaded, so
-`world`, `land`, `Terrain` and friends have nothing to answer. `mission=`
-(`--mission FILE.miz`) loads one:
-
-- The `.miz` (must exist and end in `.miz`) is copied to the isolated
-  profile's `Missions/`. The source is only read.
-- `Scripts/dedicatedServer.lua` builds settings from DCS's
-  `net.get_default_server_settings()` and calls `net.start_server` with that
-  one mission: `missionList = { <profile>/Missions/<name>.miz }`,
-  `listStartIndex = 1`, no shuffle or loop, `resume_mode = RESUME_ON_LOAD`,
-  `pause_on_load = false`, `pause_without_clients = false`. Any
-  `Config/serverSettings.lua` is deleted and not used.
-- The server is private: `isPublic = false` (not in the public server list),
-  `bind_address = "127.0.0.1"`, port 10408 (not DCS's default 10308),
-  `maxPlayers = 1`, and a random 32-hex-digit password generated per run.
-  It is named `dcs-headless`.
-- If `net.start_server` returns an error, the script logs
-  `DCS_HEADLESS ... net.start_server failed with code N` and the run fails on
-  that line.
-
-One mission per run. To cover several terrains, call `run()` once per
-mission (each run relaunches DCS).
-
-GameGUI hooks see `onSimulationStart` once the mission is loaded and running,
-and can read the mission environment with `net.dostring_in("mission", code)`,
-which returns the result as a string.
-
-### Example: per-terrain pass
-
-A hook (sketch) that dumps terrain data once the mission runs, then writes a
-done-marker the run waits for:
-
-```lua
--- terrain-dump.lua (GameGUI hook)
-local out = lfs.writedir() .. "TerrainDump/"
-local code = [[
-  local ab = {}
-  for _, a in ipairs(world.getAirbases()) do
-    ab[#ab + 1] = a:getName() .. "|" .. #a:getRunways() .. "|" .. #a:getParking()
-  end
-  return table.concat(ab, "\n")
-]]
-DCS.setUserCallbacks({
-  onSimulationStart = function()
-    lfs.mkdir(out)
-    local text, ok = net.dostring_in("mission", code)
-    local f = io.open(out .. "airbases.txt", "w"); f:write(tostring(text)); f:close()
-    local d = io.open(out .. "done", "w"); d:write(tostring(ok)); d:close()
-  end,
-})
-```
+## Library
 
 ```python
 from pathlib import Path
 from dcs_headless import run
 
-for miz in sorted(Path("missions").glob("*.miz")):  # one empty mission per terrain
-    result = run(
-        profile="DCS.terrain",
-        hooks=[Path("hooks/terrain-dump.lua")],
-        mission=miz,
-        out=Path("out/terrain") / miz.stem,
-        wait_file="TerrainDump/done",
-        timeout=900,
-    )
-    if not result.ok:
-        raise SystemExit(f"{miz.name}: {result.reason}")
-    # copy result.profile / "TerrainDump" before the next run overwrites it
+result = run(
+    profile="DCS.datamine",
+    hooks=[Path("hook/dump-globals.lua"), Path("hook/serialize.lua")],
+    out=Path("out/datamine"),
+    wait_file="DCS.Lua.Exporter/_G/__DCS_VERSION__.lua",
+    fail_log="Export aborted|records failed",
+)
+if not result.ok:
+    raise SystemExit(result.reason)
+dump = result.profile / "DCS.Lua.Exporter" / "_G"
 ```
+
+`run()` takes keyword arguments only:
+
+```python
+run(*, profile="DCS.headless", hooks=(), out, wait_file=None, wait_log=None,
+    fail_log=None, timeout=600, stall_timeout=120, install_dir=None,
+    auth_from=None, options_template=None, mission=None) -> RunResult
+```
+
+`wait_file`, `wait_log` and `fail_log` take a string or a list of strings.
+`stall_timeout=None` or `0` disables the stall check.
+
+`RunResult`:
+
+| Field | Type | |
+| --- | --- | --- |
+| `ok` | `bool` | condition met and no cleanup errors |
+| `reason` | `str` | `condition met` or why it failed |
+| `profile` | `Path` | isolated profile |
+| `pid` | `int \| None` | launched DCS PID |
+| `elapsed_seconds` | `float` | |
+| `log` | `Path \| None` | `dcs.log` copied to `out` |
+| `cleanup_errors` | `list[str]` | |
+
+Errors:
+
+- `HeadlessError` is raised before launch for: DCS already running, bad or
+  reserved profile name, existing profile without the `.dcs-headless` marker,
+  install not found, missing hook or `options.lua`, duplicate hook names,
+  mission not an existing `.miz`, no wait condition, bad regex, wait file
+  outside the profile.
+- If a `DCS.exe` appears between prepare and launch, `run` cleans up, writes
+  `result.json` and raises `DcsRunning` (a `HeadlessError`).
+- Anything after that (missing auth files, DCS not appearing within 15 s,
+  timeout, ...) returns `ok=False`.
+- SIGINT/SIGTERM/SIGHUP raise `Interrupted` after cleanup; the result is in
+  `.result` and the signal in `.signum`. Handlers are only installed when
+  `run` is called from the main thread.
+
+`dcs_headless.paths.resolve(install_dir=None, auth_from=None,
+profile="DCS.headless") -> Paths` resolves paths without writing anything.
+`Paths` has `install`, `auth_profile`, `profile`, `exe` and `saved_games`.
 
 ## Profile
 
-`prepare` (and `run`) create the profile directory with a `.dcs-headless`
-marker file, then write:
+`prepare` (and `run`) create the profile with a `.dcs-headless` marker and
+reset it:
 
-- `Config/options.lua`: a copy of the auth source profile's
-  `Config/options.lua` (read, never modified) with its single
-  `["launcher"] = ...` entry set to `false`. The DCS install's default
-  `MissionEditor/data/scripts/options.lua` is not used: DCS stalled after the
-  startup banner with it. `--options-template FILE` uses another file. A
-  source without exactly one `["launcher"]` entry is refused.
+- `Config/options.lua`: copy of the source profile's `options.lua` (or
+  `--options-template`) with `["launcher"]` set to `false`. The file must
+  contain exactly one `["launcher"]` entry. The install's default
+  `options.lua` is not used because DCS stalls with it.
 - `Config/autoexec.cfg`: empty.
-- `Scripts/dedicatedServer.lua`: only writes a log line, so no server or
-  mission starts; with a mission, starts it (see [Mission runs](#mission-runs)).
-- `Missions/`: removed; with a mission, recreated holding only that `.miz`.
-- `Scripts/Hooks/`: replaced with exactly the `--hook` files.
+- `Scripts/dedicatedServer.lua`: no-op, or the mission starter.
+- `Scripts/Hooks/`: exactly the `--hook` files.
+- `Missions/`: removed; recreated with only the `.miz` when `--mission` is given.
 - `Tracks/`: created.
+- Removed: `Logs/dcs.log`, `Config/serverSettings.lua`, leftover auth files.
 
-It removes `Logs/dcs.log`, `Config/serverSettings.lua` and any auth files
-left in the profile.
+## Missions
 
-## Auth policy
+`--mission FILE.miz` (or `mission=`) copies the file into `Missions/` and
+starts it on a local server, so terrain APIs work. One mission per run;
+call `run` once per map. Copy anything you need out of the profile between
+runs, since the next run resets it.
 
-- `authdata.bin` and `network.vault` are copied from the auth source profile
-  into the isolated profile's `Config/` at the start of each `run`, and never
-  at any other time.
-- They are deleted after every run: on success, on failure, on timeout, on
-  exceptions, and on SIGINT/SIGTERM/SIGHUP. Signals received during cleanup
-  are ignored so cleanup completes.
-- A process killed with SIGKILL cannot clean up. The next `prepare`, `run` or
-  `stop` deletes any auth files left in the profile.
-- The files are copied as bytes; their contents are never read into
-  program text or logged.
-- `.gitignore` excludes `authdata.bin`, `network.vault` and `*.vault`.
+The server is built from `net.get_default_server_settings()`:
 
-## Safety
+- name `dcs-headless`, `isPublic = false`, `bind_address = "127.0.0.1"`,
+  port 10408, `maxPlayers = 1`, random 32-hex password per run
+- single-mission list, no shuffle or loop
+- `resume_mode = RESUME_ON_LOAD`, `pause_on_load = false`,
+  `pause_without_clients = false`
 
-dcs-headless never stops, or asks to stop, a DCS process it did not start.
+If `net.start_server` fails, the script logs
+`DCS_HEADLESS ... net.start_server failed with code N` and the run fails on
+that line. Hooks get `onSimulationStart` once the mission is running.
 
-- `run` and `prepare` do nothing while any `DCS.exe` is running. Launch
-  checks again in the same PowerShell call that starts DCS.
-- During a run, `tasklist.exe` is polled every 3 s. If a `DCS.exe` appears
-  that is not ours (for example you start the game), the run is aborted:
-  only our process is stopped and the other one is left alone.
-- Ours means the launched process, or a `DCS.exe` whose parent is ours, that
-  started after it, and whose parent is still alive with the recorded start
-  time or whose command line runs our profile (DCS restarting itself).
-  PowerShell is only used to classify a PID when tasklist shows one not yet
-  classified.
-- The launched process is identified only if its name is `DCS.exe`, its
-  executable is `<install>\bin-mt\DCS.exe`, and its command line has exactly
-  one `-w <profile>`, `--server` and `--norender`. Its PID and start time are
-  recorded in `<profile>/run/process.json`.
-- Immediately before `Stop-Process`, control.ps1 checks the PID's name and
-  start time, and either its command line (launched process) or its parent
-  (descendant). A mismatch refuses the stop.
-- Profiles named `DCS`, `DCS.openbeta`, `DCS.openalpha` or
-  `DCS.release_server` (any case), the auth source profile, and any existing
-  directory without a valid `.dcs-headless` marker are refused.
-- Profile names are limited to letters, digits, `.`, `_` and `-`.
-- The only files read outside the isolated profile are the auth files,
-  `options.lua` (or `--options-template`), the hook files and the mission. Nothing is
-  written outside the isolated profile except `--out`.
+## Auth files
+
+`authdata.bin` and `network.vault` are copied from the source profile into
+the isolated profile's `Config/` at the start of each `run`, and deleted when
+it ends, whether it succeeds, fails or is interrupted. Signals during cleanup
+are ignored. If the process is SIGKILLed, the next `prepare`, `run` or `stop`
+deletes them. `.gitignore` excludes `authdata.bin`, `network.vault` and
+`*.vault`.
+
+## Other DCS processes
+
+dcs-headless only stops DCS processes it started.
+
+- `prepare` and `run` refuse while any `DCS.exe` is running, and launch checks
+  again in the same PowerShell call that starts DCS.
+- The launched process must be `<install>\bin-mt\DCS.exe` with exactly one
+  `-w <profile>`, plus `--server` and `--norender`. Its PID and start time go
+  in `<profile>/run/process.json`. A `DCS.exe` started by it (DCS restarting
+  itself) is also treated as ours.
+- During a run `tasklist.exe` is checked every 3 s. If any other `DCS.exe`
+  appears, the run aborts and stops only its own process.
+- Before each `Stop-Process`, `control.ps1` re-checks the PID's name, start
+  time and command line (or parent). On mismatch it refuses.
+- Refused profiles: `DCS`, `DCS.openbeta`, `DCS.openalpha`,
+  `DCS.release_server` (any case), the source profile, and any existing
+  directory without a valid marker. Names are limited to letters, digits,
+  `.`, `_` and `-`.
+- Nothing is written outside the isolated profile except `--out`.
 
 ## Development
 
 ```sh
 task setup   # uv sync
-task test    # pytest; no DCS or Windows needed
+task test    # pytest, no DCS or Windows needed
 task lint    # ruff check + format check
-task ci      # all of the above
+task fmt     # ruff fix + format
+task ci      # setup, lint, test
 ```
 
 ## License
 
-MIT. See [LICENSE](LICENSE).
+MIT
