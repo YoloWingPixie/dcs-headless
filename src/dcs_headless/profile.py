@@ -53,6 +53,11 @@ if res ~= 0 then
 end
 """
 
+# The DCS-gRPC install, relative to a profile. The hook is installed with the --hook files.
+GRPC_DIRS = ("Scripts/DCS-gRPC", "Mods/tech/DCS-gRPC")
+GRPC_FILES = ("Config/dcs-grpc.lua",)
+GRPC_HOOK = "Scripts/Hooks/DCS-gRPC.lua"
+
 _LAUNCHER = re.compile(r'(\["launcher"\]\s*=\s*)(true|false)')
 
 
@@ -104,6 +109,20 @@ def check_mission(mission: Path) -> None:
     lua_string(mission.name)
 
 
+def grpc_warning(source: Path) -> str | None:
+    """Why the DCS-gRPC install in ``source`` cannot be copied, or None."""
+    missing = [f"{rel}/" for rel in GRPC_DIRS if not (source / rel).is_dir()]
+    missing += [rel for rel in (*GRPC_FILES, GRPC_HOOK) if not (source / rel).is_file()]
+    return f"DCS-gRPC not copied, missing in {source}: {', '.join(missing)}" if missing else None
+
+
+def _remove(path: Path) -> None:
+    if path.is_dir() and not path.is_symlink():
+        shutil.rmtree(path)
+    else:
+        path.unlink(missing_ok=True)
+
+
 def mission_server_lua(mission_rel: str, password: str) -> str:
     return MISSION_SERVER_LUA.format(
         mission=lua_string(mission_rel), password=lua_string(password), port=SERVER_PORT, failed=START_FAILED
@@ -116,7 +135,8 @@ def prepare(
     hooks: list[Path],
     options_template: Path | None = None,
     mission: Path | None = None,
-) -> None:
+    with_grpc: bool = False,
+) -> list[str]:
     """Reset the claimed isolated profile for a launch.
 
     Writes ``Config/options.lua`` (``options_template``, default the auth
@@ -125,13 +145,19 @@ def prepare(
     ``Scripts/Hooks`` with exactly ``hooks``; removes ``Logs/dcs.log``,
     ``Config/serverSettings.lua``, ``Missions/`` and any leftover auth files.
 
+    The DCS-gRPC install (``Scripts/DCS-gRPC/``, ``Mods/tech/DCS-gRPC/``,
+    ``Config/dcs-grpc.lua`` and the ``DCS-gRPC.lua`` hook) is removed, and copied
+    fresh from the auth profile when ``with_grpc`` is set. If any part is missing
+    there, nothing is copied and a warning naming the missing parts is returned.
+    A ``DCS-gRPC.lua`` in ``hooks`` is refused with ``with_grpc`` either way.
+
     Without ``mission`` the dedicatedServer.lua starts nothing. With it, the .miz
     is copied to ``Missions/`` and dedicatedServer.lua starts a private server
     (loopback, not public, random password) running it.
     """
     if mission is not None:
         check_mission(mission)
-    names = [h.name for h in hooks]
+    names = [h.name for h in hooks] + ([Path(GRPC_HOOK).name] if with_grpc else [])
     if len(set(names)) != len(names):
         raise HeadlessError(f"duplicate hook file names: {names}")
     for hook in hooks:
@@ -171,5 +197,17 @@ def prepare(
     for hook in hooks:
         shutil.copyfile(hook, hooks_dir / hook.name)
 
+    warning = grpc_warning(paths.auth_profile) if with_grpc else None
+    for rel in (*GRPC_DIRS, *GRPC_FILES):
+        _remove(profile / rel)
+    if with_grpc and warning is None:
+        shutil.copyfile(paths.auth_profile / GRPC_HOOK, profile / GRPC_HOOK)
+        for rel in GRPC_FILES:
+            shutil.copyfile(paths.auth_profile / rel, profile / rel)
+        for rel in GRPC_DIRS:
+            (profile / rel).parent.mkdir(parents=True, exist_ok=True)
+            shutil.copytree(paths.auth_profile / rel, profile / rel)
+
     (profile / "Logs" / "dcs.log").unlink(missing_ok=True)
     (profile / "Tracks").mkdir(exist_ok=True)
+    return [warning] if warning else []

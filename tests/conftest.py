@@ -42,6 +42,26 @@ def dcs_proc(pid: int, command: str, started: str | None = LIVE_STARTED, parent:
     return {"pid": pid, "name": "DCS.exe", "command": command, "started": started, "parent": parent}
 
 
+GRPC_INSTALL = {
+    "Scripts/DCS-gRPC/grpc-mission.lua": "-- grpc-mission\n",
+    "Scripts/DCS-gRPC/methods/mission.lua": "-- methods\n",
+    "Mods/tech/DCS-gRPC/dcs_grpc.dll": "MZ",
+    "Scripts/Hooks/DCS-gRPC.lua": "-- grpc hook\n",
+    "Config/dcs-grpc.lua": 'host = "127.0.0.1"\n',
+}
+
+
+def install_grpc(profile: Path) -> None:
+    for rel, text in GRPC_INSTALL.items():
+        (profile / rel).parent.mkdir(parents=True, exist_ok=True)
+        (profile / rel).write_text(text)
+
+
+def grpc_left(profile: Path) -> list[str]:
+    paths = ["Scripts/DCS-gRPC", "Mods/tech/DCS-gRPC", "Scripts/Hooks/DCS-gRPC.lua", "Config/dcs-grpc.lua"]
+    return [rel for rel in paths if (profile / rel).exists()]
+
+
 @dataclass
 class Env:
     mnt: Path

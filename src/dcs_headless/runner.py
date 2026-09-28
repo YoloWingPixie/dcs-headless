@@ -12,7 +12,7 @@ import threading
 import time
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 from . import process as proc
@@ -37,6 +37,7 @@ class RunResult:
     elapsed_seconds: float
     log: Path | None
     cleanup_errors: list[str]
+    warnings: list[str] = field(default_factory=list)
 
     def to_json(self) -> dict[str, object]:
         data = asdict(self)
@@ -138,6 +139,7 @@ def run(
     options_template: Path | str | None = None,
     mission: Path | str | None = None,
     until_stopped: bool = False,
+    with_grpc: bool = False,
 ) -> RunResult:
     """Prepare the isolated profile, launch DCS headless, wait for the condition,
     stop DCS, copy dcs.log and write ``result.json`` to ``out``, delete the auth files.
@@ -157,6 +159,10 @@ def run(
     check (giving any of them is an error). Only a signal (Interrupted), a
     ``fail_log`` match, DCS exiting (``ok=False``, "DCS exited") or another DCS
     starting ends it.
+
+    ``with_grpc`` copies the DCS-gRPC install from the auth profile into the
+    isolated profile; without it any earlier copy is removed. If the auth profile
+    lacks part of it, the run goes ahead without gRPC and ``warnings`` says why.
     """
     ready = _regexes(_as_list(wait_log), "wait_log")
     fail = _regexes(_as_list(fail_log), "fail_log")
@@ -178,11 +184,12 @@ def run(
     wait_files = [_wait_file(paths.profile, rel) for rel in wait_rel]
     proc.ensure_idle()
     proc.clear_record(paths.profile)
-    prepare(
+    warnings = prepare(
         paths,
         hooks=[Path(h) for h in hooks],
         options_template=Path(options_template) if options_template else None,
         mission=mission_path,
+        with_grpc=with_grpc,
     )
     for f in wait_files:
         f.unlink(missing_ok=True)
@@ -233,6 +240,7 @@ def run(
         elapsed_seconds=round(time.monotonic() - started_at, 1),
         log=log if log.is_file() else None,
         cleanup_errors=errors,
+        warnings=warnings,
     )
     (out / "result.json").write_text(json.dumps(result.to_json(), indent=2) + "\n", encoding="utf-8")
     if refused is not None:

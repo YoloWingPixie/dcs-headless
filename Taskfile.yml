@@ -2,6 +2,7 @@ version: '3'
 
 vars:
   PROFILE: '{{.PROFILE | default "DCS.headless"}}'
+  GRPC: '{{.GRPC | default ""}}'
 
 tasks:
   default:
@@ -47,18 +48,18 @@ tasks:
       - uv run dcs-headless prepare --profile {{.PROFILE}} {{.CLI_ARGS}}
 
   server:
-    desc: "Run a mission on a private server until Ctrl+C (MISSION=file.miz)"
+    desc: "Run a mission on a private server until Ctrl+C (MISSION=file.miz, GRPC=1 for DCS-gRPC)"
     prompt: Launch DCS headless? Close any running DCS first.
     requires:
       vars: [MISSION]
     cmds:
-      - uv run dcs-headless run --until-stopped --mission "{{.MISSION}}" --profile {{.PROFILE}} --out out/server {{.CLI_ARGS}}
+      - uv run dcs-headless run --until-stopped --mission "{{.MISSION}}" --profile {{.PROFILE}} --out out/server {{if eq .GRPC "1"}}--with-grpc{{end}} {{.CLI_ARGS}}
 
   server:menu:
-    desc: "Run DCS at the menu, no mission, until Ctrl+C"
+    desc: "Run DCS at the menu, no mission, until Ctrl+C (GRPC=1 for DCS-gRPC)"
     prompt: Launch DCS headless? Close any running DCS first.
     cmds:
-      - uv run dcs-headless run --until-stopped --profile {{.PROFILE}} --out out/server-menu {{.CLI_ARGS}}
+      - uv run dcs-headless run --until-stopped --profile {{.PROFILE}} --out out/server-menu {{if eq .GRPC "1"}}--with-grpc{{end}} {{.CLI_ARGS}}
 
   status:
     desc: "State of the recorded DCS process"

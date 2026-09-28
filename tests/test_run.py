@@ -8,7 +8,17 @@ import signal
 from pathlib import Path
 
 import pytest
-from conftest import AUTH_BYTES, EXE_WIN, LIVE_PID, LIVE_STARTED, dcs_command, dcs_proc
+from conftest import (
+    AUTH_BYTES,
+    EXE_WIN,
+    GRPC_INSTALL,
+    LIVE_PID,
+    LIVE_STARTED,
+    dcs_command,
+    dcs_proc,
+    grpc_left,
+    install_grpc,
+)
 
 import dcs_headless
 from dcs_headless import HeadlessError, RunResult, cli, process, runner
@@ -351,6 +361,7 @@ def test_library_contract():
         "elapsed_seconds",
         "log",
         "cleanup_errors",
+        "warnings",
     ]
     params = inspect.signature(runner.run).parameters
     assert {name: p.default for name, p in params.items()} == {
@@ -367,6 +378,7 @@ def test_library_contract():
         "options_template": None,
         "mission": None,
         "until_stopped": False,
+        "with_grpc": False,
     }
     assert [f.name for f in dataclasses.fields(Paths)] == ["install", "auth_profile", "profile"]
     assert {name: p.default for name, p in inspect.signature(resolve).parameters.items()} == {
@@ -463,6 +475,67 @@ def test_run_refuses_bad_mission(env, tmp_path, hooks, windows, name):
     assert not env.profile.exists()
     assert run_cli(env, tmp_path, hooks, "--mission", str(tmp_path / name)) == 1
     assert windows.calls == []
+
+
+# --- DCS-gRPC ---------------------------------------------------------------------------
+
+
+def test_run_with_grpc(env, tmp_path, hooks, windows):
+    install_grpc(env.user_profile)
+
+    def launched():
+        for rel, text in GRPC_INSTALL.items():
+            assert (env.profile / rel).read_text() == text
+        dcs_writes(env, "INFO done\n")()
+
+    windows.on_launch = launched
+    assert run_cli(env, tmp_path, hooks, "--with-grpc") == 0
+    assert windows.actions() == ["Launch", "Stop"] and auth_left(env.profile) == []
+
+    windows.calls.clear()
+    windows.on_launch = dcs_writes(env, "INFO done\n")
+    assert run_cli(env, tmp_path, hooks) == 0
+    assert grpc_left(env.profile) == []
+
+
+def test_run_with_grpc_missing_in_source_runs_without_it(env, tmp_path, hooks, windows, capsys):
+    install_grpc(env.user_profile)
+    (env.user_profile / "Config" / "dcs-grpc.lua").unlink()
+    windows.on_launch = dcs_writes(env, "INFO done\n")
+    res = dcs_headless.run(hooks=hooks, out=tmp_path / "out", wait_file=WAIT, with_grpc=True)
+    warning = f"DCS-gRPC not copied, missing in {env.user_profile}: Config/dcs-grpc.lua"
+    assert res.ok and res.warnings == [warning]
+    assert result(tmp_path)["warnings"] == [warning]
+    assert grpc_left(env.profile) == []
+
+    windows.on_launch = dcs_writes(env, "INFO done\n")
+    assert run_cli(env, tmp_path, hooks, "--with-grpc") == 0
+    assert capsys.readouterr().err == f"dcs-headless: warning: {warning}\n"
+    assert result(tmp_path)["warnings"] == [warning]
+
+
+def test_run_without_grpc_has_no_warnings(env, tmp_path, hooks, windows, capsys):
+    windows.on_launch = dcs_writes(env, "INFO done\n")
+    assert run_cli(env, tmp_path, hooks) == 0
+    assert result(tmp_path)["warnings"] == [] and capsys.readouterr().err == ""
+
+
+def test_run_with_grpc_hook_collision_fails_before_launch(env, tmp_path, windows):
+    install_grpc(env.user_profile)
+    (tmp_path / "DCS-gRPC.lua").write_text("")
+    assert run_cli(env, tmp_path, [str(tmp_path / "DCS-gRPC.lua")], "--with-grpc") == 1
+    assert windows.actions() == []
+    assert auth_left(env.profile) == []
+
+
+def test_prepare_command_with_grpc(env, windows, capsys):
+    assert cli.main(["prepare", "--with-grpc"]) == 0
+    assert capsys.readouterr().err.startswith("dcs-headless: warning: DCS-gRPC not copied, missing in ")
+    install_grpc(env.user_profile)
+    assert cli.main(["prepare", "--with-grpc"]) == 0
+    assert len(grpc_left(env.profile)) == 4 and capsys.readouterr().err == ""
+    assert cli.main(["prepare"]) == 0
+    assert grpc_left(env.profile) == []
 
 
 # --- until stopped ---------------------------------------------------------------------

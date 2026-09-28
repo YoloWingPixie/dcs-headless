@@ -64,6 +64,7 @@ All commands take `--install-dir`, `--auth-from` and `--profile`.
 | `--hook FILE` | prepare, run | install into `Scripts/Hooks/`; repeatable |
 | `--options-template FILE` | prepare, run | use instead of the source profile's `options.lua` |
 | `--mission FILE.miz` | prepare, run | start this mission on a private server |
+| `--with-grpc` | prepare, run | copy the source profile's DCS-gRPC install; see [DCS-gRPC](#dcs-grpc) |
 | `--out DIR` | run | required; gets `dcs.log` and `result.json` |
 | `--wait-file REL` | run | file relative to the profile that must exist; deleted before launch; repeatable |
 | `--wait-log REGEX` | run | must match a `dcs.log` line; repeatable |
@@ -123,7 +124,7 @@ dump = result.profile / "DCS.Lua.Exporter" / "_G"
 run(*, profile="DCS.headless", hooks=(), out, wait_file=None, wait_log=None,
     fail_log=None, timeout=None, stall_timeout=None, install_dir=None,
     auth_from=None, options_template=None, mission=None,
-    until_stopped=False) -> RunResult
+    until_stopped=False, with_grpc=False) -> RunResult
 ```
 
 `wait_file`, `wait_log` and `fail_log` take a string or a list of strings.
@@ -141,12 +142,14 @@ disables the stall check.
 | `elapsed_seconds` | `float` | |
 | `log` | `Path \| None` | `dcs.log` copied to `out` |
 | `cleanup_errors` | `list[str]` | |
+| `warnings` | `list[str]` | e.g. DCS-gRPC not copied |
 
 Errors:
 
 - `HeadlessError` is raised before launch for: DCS already running, bad or
   reserved profile name, existing profile without the `.dcs-headless` marker,
-  install not found, missing hook or `options.lua`, duplicate hook names,
+  install not found, missing hook or `options.lua`, duplicate hook names
+  (including a `DCS-gRPC.lua` hook with `with_grpc`),
   mission not an existing `.miz`, no wait condition, a wait condition,
   `timeout` or `stall_timeout` with `until_stopped`, bad regex, wait file
   outside the profile.
@@ -173,7 +176,9 @@ reset it:
   `options.lua` is not used because DCS stalls with it.
 - `Config/autoexec.cfg`: empty.
 - `Scripts/dedicatedServer.lua`: no-op, or the mission starter.
-- `Scripts/Hooks/`: exactly the `--hook` files.
+- `Scripts/Hooks/`: exactly the `--hook` files, plus `DCS-gRPC.lua` with `--with-grpc`.
+- DCS-gRPC (`Scripts/DCS-gRPC/`, `Mods/tech/DCS-gRPC/`, `Config/dcs-grpc.lua`):
+  removed; copied fresh with `--with-grpc`.
 - `Missions/`: removed; recreated with only the `.miz` when `--mission` is given.
 - `Tracks/`: created.
 - Removed: `Logs/dcs.log`, `Config/serverSettings.lua`, leftover auth files.
@@ -197,6 +202,21 @@ If `net.start_server` fails, the script logs
 `DCS_HEADLESS ... net.start_server failed with code N` and the run fails on
 that line. Hooks get `onSimulationStart` once the mission is running.
 
+## DCS-gRPC
+
+`--with-grpc` (or `with_grpc=True`) copies `Scripts/DCS-gRPC/`,
+`Mods/tech/DCS-gRPC/`, `Scripts/Hooks/DCS-gRPC.lua` and `Config/dcs-grpc.lua`
+from the source profile on every `prepare` and `run`. Without it they are
+removed, so a run never picks up a stale copy. If any of the four is missing
+from the source profile, nothing is copied and the run goes ahead without
+gRPC; the missing paths are printed as a warning on stderr and listed in
+`warnings` in `result.json`. A `--hook DCS-gRPC.lua` together with
+`--with-grpc` is refused as a duplicate hook.
+
+The install's `MissionScripting.lua` change `dofile`s
+`Scripts\DCS-gRPC\grpc-mission.lua` from the profile, so without
+`--with-grpc` every mission logs `no file ...grpc-mission.lua`.
+
 ## Running a server
 
 `run --until-stopped` keeps DCS running until you stop it. There is no
@@ -218,6 +238,7 @@ to `dcs-headless`):
 ```sh
 task server MISSION=/path/to/mission.miz   # mission on the private server, out/server
 task server:menu                           # DCS at the menu, for hook testing, out/server-menu
+task server MISSION=/path/to/mission.miz GRPC=1   # same, with DCS-gRPC (--with-grpc)
 task status
 task stop
 task smoke                                 # launch, wait for startup, stop; out/smoke

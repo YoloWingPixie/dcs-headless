@@ -11,7 +11,7 @@ from . import process as proc
 from .auth import remove_auth
 from .errors import HeadlessError
 from .paths import DEFAULT_PROFILE, Paths, resolve, to_windows
-from .profile import claim, is_marked, prepare
+from .profile import claim, grpc_warning, is_marked, prepare
 from .runner import Interrupted, run
 
 
@@ -19,8 +19,16 @@ def _resolve(args: argparse.Namespace) -> Paths:
     return resolve(args.install_dir, args.auth_from, args.profile)
 
 
+def _warn(warnings: list[str]) -> None:
+    for warning in warnings:
+        print(f"dcs-headless: warning: {warning}", file=sys.stderr)
+
+
 def cmd_run(args: argparse.Namespace) -> int:
     code = 0
+    # Warned before launch too: an --until-stopped run only prints its result at the end.
+    if args.with_grpc and (warning := grpc_warning(_resolve(args).auth_profile)):
+        _warn([warning])
     try:
         result = run(
             profile=args.profile,
@@ -36,6 +44,7 @@ def cmd_run(args: argparse.Namespace) -> int:
             options_template=args.options_template,
             mission=args.mission,
             until_stopped=args.until_stopped,
+            with_grpc=args.with_grpc,
         )
     except Interrupted as exc:
         assert exc.result is not None
@@ -48,7 +57,14 @@ def cmd_prepare(args: argparse.Namespace) -> int:
     paths = _resolve(args)
     claim(paths.profile, create=True)
     proc.ensure_idle()
-    prepare(paths, hooks=[Path(h) for h in args.hook], options_template=args.options_template, mission=args.mission)
+    warnings = prepare(
+        paths,
+        hooks=[Path(h) for h in args.hook],
+        options_template=args.options_template,
+        mission=args.mission,
+        with_grpc=args.with_grpc,
+    )
+    _warn(warnings)
     print(f"prepared {paths.profile}")
     return 0
 
@@ -131,6 +147,11 @@ def _parser() -> argparse.ArgumentParser:
         type=Path,
         metavar="FILE.miz",
         help="copy this mission into the profile and start it on a private (loopback, not public) server",
+    )
+    setup.add_argument(
+        "--with-grpc",
+        action="store_true",
+        help="copy the DCS-gRPC install (scripts, mod, hook, config) from the source profile",
     )
 
     parser = argparse.ArgumentParser(prog="dcs-headless", description="Run DCS World headless from WSL.")

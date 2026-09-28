@@ -4,7 +4,7 @@ import shutil
 import subprocess
 
 import pytest
-from conftest import USER_OPTIONS
+from conftest import GRPC_INSTALL, USER_OPTIONS, grpc_left, install_grpc
 
 from dcs_headless import HeadlessError
 from dcs_headless.paths import resolve
@@ -91,6 +91,64 @@ def test_missing_or_duplicate_hooks_are_refused(env, paths, tmp_path):
         (d / "h.lua").write_text("")
     with pytest.raises(HeadlessError, match="duplicate"):
         prepare(paths, hooks=[tmp_path / "h.lua", tmp_path / "x" / "h.lua"])
+
+
+def test_prepare_with_grpc_copies_the_install(env, paths, tmp_path):
+    install_grpc(env.user_profile)
+    hook = tmp_path / "h.lua"
+    hook.write_text("")
+    prepare(paths, hooks=[hook], with_grpc=True)
+    for rel, text in GRPC_INSTALL.items():
+        assert (env.profile / rel).read_text() == text
+    assert sorted(p.name for p in (env.profile / "Scripts" / "Hooks").iterdir()) == ["DCS-gRPC.lua", "h.lua"]
+
+    (env.profile / "Scripts" / "DCS-gRPC" / "stale.lua").write_text("")
+    (env.user_profile / "Config" / "dcs-grpc.lua").write_text("changed\n")
+    prepare(paths, hooks=[], with_grpc=True)
+    assert not (env.profile / "Scripts" / "DCS-gRPC" / "stale.lua").exists()
+    assert (env.profile / "Config" / "dcs-grpc.lua").read_text() == "changed\n"
+
+
+def test_prepare_without_grpc_removes_previous_copy(env, paths):
+    install_grpc(env.user_profile)
+    prepare(paths, hooks=[], with_grpc=True)
+    (env.profile / "Mods" / "tech" / "Other").mkdir()
+    prepare(paths, hooks=[])
+    assert grpc_left(env.profile) == []
+    assert (env.profile / "Mods" / "tech" / "Other").is_dir()
+    assert len(grpc_left(env.user_profile)) == 4  # source untouched
+
+
+@pytest.mark.parametrize(
+    "rel", ["Scripts/DCS-gRPC/", "Mods/tech/DCS-gRPC/", "Scripts/Hooks/DCS-gRPC.lua", "Config/dcs-grpc.lua"]
+)
+def test_prepare_with_grpc_partly_missing_in_source_copies_nothing(env, paths, rel):
+    install_grpc(env.user_profile)
+    prepare(paths, hooks=[], with_grpc=True)
+    path = env.user_profile / rel
+    if rel.endswith("/"):
+        shutil.rmtree(path)
+    else:
+        path.unlink()
+    assert prepare(paths, hooks=[], with_grpc=True) == [f"DCS-gRPC not copied, missing in {env.user_profile}: {rel}"]
+    assert grpc_left(env.profile) == []
+    assert (env.profile / "Config" / "options.lua").is_file()
+
+
+def test_prepare_with_grpc_reports_every_missing_part(env, paths):
+    (warning,) = prepare(paths, hooks=[], with_grpc=True)
+    assert warning.endswith(": Scripts/DCS-gRPC/, Mods/tech/DCS-gRPC/, Config/dcs-grpc.lua, Scripts/Hooks/DCS-gRPC.lua")
+    assert prepare(paths, hooks=[]) == []
+
+
+def test_grpc_hook_name_collision_is_refused(env, paths, tmp_path):
+    install_grpc(env.user_profile)
+    hook = tmp_path / "DCS-gRPC.lua"
+    hook.write_text("")
+    with pytest.raises(HeadlessError, match="duplicate"):
+        prepare(paths, hooks=[hook], with_grpc=True)
+    assert not (env.profile / "Config").exists()
+    prepare(paths, hooks=[hook])
 
 
 @pytest.mark.parametrize("name", ["DCS", "DCS.openbeta", "dcs.OpenBeta", "DCS.openalpha", "DCS.release_server"])
