@@ -11,7 +11,7 @@ from . import process as proc
 from .auth import remove_auth
 from .errors import HeadlessError
 from .paths import DEFAULT_PROFILE, Paths, resolve, to_windows
-from .profile import claim, grpc_warning, is_marked, prepare
+from .profile import SERVER_PORT, claim, grpc_warning, is_marked, prepare
 from .runner import Interrupted, run
 
 
@@ -45,6 +45,7 @@ def cmd_run(args: argparse.Namespace) -> int:
             mission=args.mission,
             until_stopped=args.until_stopped,
             with_grpc=args.with_grpc,
+            port=args.port,
         )
     except Interrupted as exc:
         assert exc.result is not None
@@ -56,13 +57,14 @@ def cmd_run(args: argparse.Namespace) -> int:
 def cmd_prepare(args: argparse.Namespace) -> int:
     paths = _resolve(args)
     claim(paths.profile, create=True)
-    proc.ensure_idle()
+    proc.ensure_idle(paths.profile)
     warnings = prepare(
         paths,
         hooks=[Path(h) for h in args.hook],
         options_template=args.options_template,
         mission=args.mission,
         with_grpc=args.with_grpc,
+        port=args.port,
     )
     _warn(warnings)
     print(f"prepared {paths.profile}")
@@ -147,6 +149,12 @@ def _parser() -> argparse.ArgumentParser:
         type=Path,
         metavar="FILE.miz",
         help="copy this mission into the profile and start it on a private (loopback, not public) server",
+    )
+    setup.add_argument(
+        "--port",
+        type=int,
+        default=SERVER_PORT,
+        help=f"mission server port, 1024-65535 (default: {SERVER_PORT}); concurrent runs need different ports",
     )
     setup.add_argument(
         "--with-grpc",

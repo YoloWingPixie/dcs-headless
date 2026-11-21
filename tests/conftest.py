@@ -112,13 +112,16 @@ class FakeWindows:
         if action == "List":
             return "\ufeff" + json.dumps(self.procs, separators=(",", ":")) + "\r\n"
         if action == "Launch":
-            if self.procs:
-                return json.dumps({"running": list(self.procs), "procs": []}) + "\r\n"
+            profile = params["-ProfileName"].casefold()
+            same = [p for p in self.procs if f"-w {profile}" in p["command"].casefold()]
+            if same:
+                return json.dumps({"running": same, "procs": []}) + "\r\n"
             command = f'"{params["-Exe"]}" -w {params["-ProfileName"]} --server --norender'
-            self.procs.append(dcs_proc(LIVE_PID, command))
+            ours = dcs_proc(LIVE_PID, command)
+            self.procs.append(ours)
             if self.on_launch:
                 self.on_launch()
-            return json.dumps({"running": [], "procs": self.procs}) + "\r\n"
+            return json.dumps({"running": [], "procs": [ours]}) + "\r\n"
         if action == "Stop":
             return self._stop(params)
         raise AssertionError(f"unknown action {action}")

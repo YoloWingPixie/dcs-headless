@@ -1,9 +1,11 @@
 # Windows side of dcs-headless. Every action writes one JSON document to stdout.
 # A process row is {pid, name, command, started (UTC, ISO 8601), parent}.
 #   List    DCS.exe processes
-#   Launch  refuse if any DCS.exe runs ({running: [rows]}); otherwise start
-#           <Exe> -w <ProfileName> --server --norender through the desktop shell and
-#           poll every 250 ms until a DCS.exe with a command line appears ({procs: [rows]})
+#   Launch  refuse if a DCS.exe runs with -w <ProfileName> ({running: [rows]}); DCS.exe
+#           processes of other profiles are ignored, and so are rows with an unreadable
+#           (empty) command line. Otherwise start <Exe> -w <ProfileName> --server
+#           --norender through the desktop shell and poll every 250 ms until a DCS.exe
+#           started after the call and running exactly that appears ({procs: [rows]})
 #   Stop    stop <ProcessId> if it is DCS.exe started at <Started> and either its
 #           parent is <ParentId> or its command line is -w <ProfileName> --server --norender
 param(
@@ -30,6 +32,13 @@ function Get-Dcs([string]$Filter = "Name = 'DCS.exe'") {
     })
 }
 
+function Test-Profile($Row, [bool]$Headless) {
+    $cmd = ' ' + $Row.command + ' '
+    $ok = $cmd -match ('\s-w\s+"?' + [regex]::Escape($ProfileName) + '"?\s')
+    if ($Headless) { $ok = $ok -and $cmd -match '\s--server\s' -and $cmd -match '\s--norender\s' }
+    $ok
+}
+
 function Write-Json($Value) { ConvertTo-Json -InputObject $Value -Compress -Depth 4 }
 
 if ($Action -eq 'List') {
@@ -39,11 +48,12 @@ if ($Action -eq 'List') {
 
 if ($Action -eq 'Launch') {
     if ($ProfileName -eq 'unset' -or !$Exe -or !$WorkingDirectory) { throw 'Launch needs -Exe, -WorkingDirectory and -ProfileName.' }
-    $running = @(Get-Dcs)
+    $running = @(Get-Dcs | Where-Object { Test-Profile $_ $false })
     if ($running.Count -gt 0) {
         Write-Json ([ordered]@{ running = $running; procs = @() })
         exit 0
     }
+    $launchedAt = [datetime]::UtcNow
     $handle = 0
     $desktop = (New-Object -ComObject Shell.Application).Windows().FindWindowSW(0, 0, 8, [ref]$handle, 1)
     if (!$desktop) { throw 'The Windows desktop shell view is unavailable.' }
@@ -51,7 +61,10 @@ if ($Action -eq 'Launch') {
     $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
     do {
         Start-Sleep -Milliseconds 250
-        $procs = @(Get-Dcs | Where-Object { $_.command -and $_.started })
+        $procs = @(Get-Dcs | Where-Object {
+            $_.command -and $_.started -and (Test-Profile $_ $true) -and
+            [datetime]::Parse($_.started, [cultureinfo]::InvariantCulture, 'RoundtripKind') -ge $launchedAt
+        })
     } until ($procs.Count -gt 0 -or (Get-Date) -gt $deadline)
     Write-Json ([ordered]@{ running = @(); procs = $procs })
     exit 0
