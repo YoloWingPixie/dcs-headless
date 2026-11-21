@@ -28,7 +28,8 @@ from dcs_headless.paths import Paths, resolve
 from dcs_headless.profile import claim
 
 WAIT = "DCS.Lua.Exporter/_G/__DCS_VERSION__.lua"
-USER_GAME = dcs_proc(41236, f'"{EXE_WIN}"', "2026-09-28T01:00:00.0000000Z")
+USER_GAME = dcs_proc(41236, f'"{EXE_WIN}" -w DCS.other', "2026-09-28T01:00:00.0000000Z")
+SAME_PROFILE = dcs_proc(41238, dcs_command("DCS.headless"), "2026-09-28T01:00:00.0000000Z")
 
 
 def auth_left(profile):
@@ -120,22 +121,31 @@ def test_run_success(env, tmp_path, hooks, windows, capsys):
         assert data.decode("latin-1") not in out.out + out.err
 
 
-def test_run_refuses_when_dcs_is_running(env, tmp_path, hooks, windows):
-    windows.procs.append(USER_GAME)
+def test_run_refuses_when_same_profile_dcs_is_running(env, tmp_path, hooks, windows):
+    windows.procs.append(SAME_PROFILE)
     assert run_cli(env, tmp_path, hooks) == 1
-    assert windows.calls == []
-    assert windows.procs == [USER_GAME]
+    assert windows.actions() == ["List"]
+    assert windows.procs == [SAME_PROFILE]
     assert auth_left(env.profile) == []
     assert not (tmp_path / "out").exists()
 
 
+def test_run_and_prepare_proceed_with_other_profile_dcs(env, tmp_path, hooks, windows):
+    windows.procs.append(USER_GAME)
+    windows.on_launch = dcs_writes(env, "INFO Export complete in 4.76 s\n")
+    assert run_cli(env, tmp_path, hooks) == 0
+    assert windows.stopped() == [LIVE_PID]
+    assert windows.procs == [USER_GAME]
+    assert cli.main(["prepare"]) == 0
+
+
 def test_run_refused_by_launch_race(env, tmp_path, hooks, windows, monkeypatch):
     """The user starts DCS between the idle check and Launch: nothing is stopped."""
-    monkeypatch.setattr(process, "ensure_idle", lambda: windows.procs.append(USER_GAME))
-    with pytest.raises(DcsRunning, match="41236"):
+    monkeypatch.setattr(process, "ensure_idle", lambda profile: windows.procs.append(SAME_PROFILE))
+    with pytest.raises(DcsRunning, match="41238"):
         runner.run(out=tmp_path / "out", hooks=hooks, wait_file=WAIT)
     assert windows.actions() == ["Launch"]
-    assert windows.procs == [USER_GAME]
+    assert windows.procs == [SAME_PROFILE]
     assert auth_left(env.profile) == []
 
 
@@ -183,18 +193,39 @@ def test_failure_pattern_stops_and_deletes_auth(env, tmp_path, hooks, windows):
     assert auth_left(env.profile) == []
 
 
-def test_foreign_dcs_mid_run_aborts_and_only_ours_is_stopped(env, tmp_path, hooks, windows):
+def test_same_profile_foreign_dcs_mid_run_aborts_and_only_ours_is_stopped(env, tmp_path, hooks, windows):
     def launched():
         dcs_writes(env, "INFO loading\n", marker=False)()
-        windows.on_tasklist = lambda n: windows.procs.append(USER_GAME) if USER_GAME not in windows.procs else None
+        windows.on_tasklist = lambda n: (
+            windows.procs.append(SAME_PROFILE) if SAME_PROFILE not in windows.procs else None
+        )
 
     windows.on_launch = launched
     assert run_cli(env, tmp_path, hooks) == 1
-    assert result(tmp_path)["reason"] == "another DCS started (PID 41236); aborting"
+    assert result(tmp_path)["reason"] == "another DCS started with our profile (PID 41238); aborting"
     assert windows.stopped() == [LIVE_PID]
-    assert all(params.get("-ProcessId") != "41236" for _, params in windows.calls)
-    assert windows.procs == [USER_GAME]
+    assert all(params.get("-ProcessId") != "41238" for _, params in windows.calls)
+    assert windows.procs == [SAME_PROFILE]
     assert auth_left(env.profile) == []
+
+
+def test_other_profile_dcs_mid_run_does_not_end_run(env, tmp_path, hooks, windows):
+    def launched():
+        dcs_writes(env, "INFO loading\n", marker=False)()
+
+        def tick(n):
+            if n == 2:
+                windows.procs.append(USER_GAME)
+            if n == 6:
+                dcs_writes(env, "INFO done\n")()
+
+        windows.on_tasklist = tick
+
+    windows.on_launch = launched
+    assert run_cli(env, tmp_path, hooks) == 0
+    assert windows.tasklists >= 6
+    assert windows.stopped() == [LIVE_PID]
+    assert windows.procs == [USER_GAME]
 
 
 def test_our_dcs_exiting_ends_run(env, tmp_path, hooks, windows):
@@ -329,10 +360,10 @@ def test_status_and_prepare_commands(env, tmp_path, hooks, windows, capsys):
     assert cli.main(["prepare", "--hook", hooks[0]]) == 0
     assert cli.main(["status"]) == 0
     assert json.loads(capsys.readouterr().out.splitlines()[-1]) == {"state": "none"}
-    windows.procs.append(USER_GAME)
-    assert cli.main(["prepare"]) == 1  # any running DCS blocks prepare
+    windows.procs.append(SAME_PROFILE)
+    assert cli.main(["prepare"]) == 1  # a same-profile DCS blocks prepare
     assert (env.profile / "Scripts" / "Hooks" / "dump-globals.lua").exists()
-    assert windows.procs == [USER_GAME]
+    assert windows.procs == [SAME_PROFILE]
 
 
 def test_stop_command_deletes_auth_even_when_pid_mismatches(env, windows):
@@ -379,6 +410,7 @@ def test_library_contract():
         "mission": None,
         "until_stopped": False,
         "with_grpc": False,
+        "port": 10408,
     }
     assert [f.name for f in dataclasses.fields(Paths)] == ["install", "auth_profile", "profile"]
     assert {name: p.default for name, p in inspect.signature(resolve).parameters.items()} == {
@@ -463,6 +495,27 @@ def test_mission_server_start_failure_fails_run(env, tmp_path, hooks, windows, m
     assert not res.ok and "net.start_server failed" in res.reason
     assert windows.actions()[-1] == "Stop" and windows.procs == []
     assert auth_left(env.profile) == []
+
+
+def test_port_reaches_dedicated_server_lua(env, tmp_path, hooks, windows, miz):
+    def launched():
+        assert "settings.port = 12345" in (env.profile / "Scripts" / "dedicatedServer.lua").read_text()
+        dcs_writes(env, "INFO    DCS_HEADLESS (Main): starting mission\n")()
+
+    windows.on_launch = launched
+    assert run_cli(env, tmp_path, hooks, "--mission", str(miz), "--port", "12345") == 0
+    assert windows.actions() == ["Launch", "Stop"]
+
+
+@pytest.mark.parametrize("port", ["80", "1023", "65536", "-1"])
+def test_bad_port_is_refused(env, tmp_path, hooks, windows, miz, port):
+    argv = ["--mission", str(miz), "--port", port]
+    assert run_cli(env, tmp_path, hooks, *argv) == 1
+    assert windows.calls == []
+    with pytest.raises(HeadlessError, match="port must be"):
+        cli.cmd_prepare(cli._parser().parse_args(["prepare", *argv]))
+    with pytest.raises(HeadlessError, match="port must be"):
+        dcs_headless.run(out=tmp_path / "o", wait_file=WAIT, port=True)
 
 
 @pytest.mark.parametrize("name", ["Caucasus.lua", "missing.miz"])
@@ -583,11 +636,11 @@ def test_until_stopped_fail_log_applies(env, tmp_path, windows):
     assert auth_left(env.profile) == []
 
 
-def test_until_stopped_foreign_dcs_aborts(env, tmp_path, windows):
-    after_launch(env, windows, lambda n: windows.procs.append(USER_GAME) if n == 5 else None)
+def test_until_stopped_same_profile_foreign_dcs_aborts(env, tmp_path, windows):
+    after_launch(env, windows, lambda n: windows.procs.append(SAME_PROFILE) if n == 5 else None)
     assert serve(env, tmp_path) == 1
-    assert result(tmp_path)["reason"] == "another DCS started (PID 41236); aborting"
-    assert windows.stopped() == [LIVE_PID] and windows.procs == [USER_GAME]
+    assert result(tmp_path)["reason"] == "another DCS started with our profile (PID 41238); aborting"
+    assert windows.stopped() == [LIVE_PID] and windows.procs == [SAME_PROFILE]
     assert auth_left(env.profile) == []
 
 

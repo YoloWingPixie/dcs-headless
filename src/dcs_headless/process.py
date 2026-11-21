@@ -12,6 +12,7 @@ import csv
 import json
 import ntpath
 import subprocess
+import time
 from dataclasses import asdict, dataclass, field
 from importlib.resources import files
 from pathlib import Path
@@ -23,6 +24,8 @@ from .paths import Paths, to_windows
 SCRIPT = "control.ps1"
 RECORD = Path("run") / "process.json"
 LAUNCH_TIMEOUT = 15
+TASKLIST_TRIES = 3  # WSL interop fails transiently ("accept4 failed 110"); retry before giving up
+TASKLIST_BACKOFF = 1.0
 
 
 @dataclass(frozen=True)
@@ -54,13 +57,16 @@ def _powershell(argv: list[str]) -> str:
 def _tasklist() -> str:
     """Run tasklist.exe for DCS.exe as CSV. Tests replace this function."""
     argv = ["tasklist.exe", "/FO", "CSV", "/NH", "/FI", "IMAGENAME eq DCS.exe"]
-    try:
-        result = subprocess.run(argv, check=True, capture_output=True, text=True, errors="replace")
-    except FileNotFoundError:
-        raise HeadlessError("tasklist.exe not found; dcs-headless needs WSL with Windows interop") from None
-    except subprocess.CalledProcessError as exc:
-        raise HeadlessError(f"tasklist.exe failed: {exc.stderr.strip()}") from None
-    return result.stdout
+    for attempt in range(1, TASKLIST_TRIES + 1):
+        try:
+            return subprocess.run(argv, check=True, capture_output=True, text=True, errors="replace").stdout
+        except FileNotFoundError:
+            raise HeadlessError("tasklist.exe not found; dcs-headless needs WSL with Windows interop") from None
+        except subprocess.CalledProcessError as exc:
+            if attempt == TASKLIST_TRIES:
+                raise HeadlessError(f"tasklist.exe failed: {exc.stderr.strip()}") from None
+            time.sleep(TASKLIST_BACKOFF * attempt)
+    raise AssertionError("unreachable")
 
 
 def dcs_pids() -> set[int]:
@@ -72,12 +78,18 @@ def dcs_pids() -> set[int]:
     }
 
 
-def ensure_idle() -> None:
-    """Refuse when any DCS.exe is running. Used before anything is prepared or launched."""
-    pids = dcs_pids()
-    if pids:
+def ensure_idle(profile: Path) -> None:
+    """Refuse when a DCS.exe is running with this profile. DCS.exe processes of
+    other profiles are ignored, and so are rows whose command line could not be
+    read (empty): they cannot be matched to a profile. Used before anything is
+    prepared or launched."""
+    if not dcs_pids():
+        return
+    same = [p for p in list_processes(profile) if uses_profile(p, profile.name)]
+    if same:
         raise DcsRunning(
-            f"DCS is already running (PID {', '.join(map(str, sorted(pids)))}); not starting or modifying anything"
+            f"DCS is already running with profile {profile.name} (PID {', '.join(str(p.pid) for p in same)}); "
+            "not starting or modifying anything"
         )
 
 
@@ -214,6 +226,9 @@ class Tracker:
     parents: dict[int, int] = field(default_factory=dict)  # descendant pid -> parent pid
     running: set[int] = field(default_factory=set)  # ours, as of the last refresh
     foreign: set[int] = field(default_factory=set)  # DCS.exe PIDs classified as not ours
+    conflicts: set[int] = field(default_factory=set)  # foreign PIDs running our profile
+    watch_failures: int = 0  # check() calls whose process listing failed (WSL interop); the run kept going
+    watch_error: str = ""  # the last such failure
 
     def __post_init__(self) -> None:
         self.lineage[self.record.pid] = self.record.started
@@ -238,23 +253,34 @@ class Tracker:
                     self.parents[p.pid] = p.parent
                     self.running.add(p.pid)
                     changed = True
-        self.foreign |= {p.pid for p in procs if p.pid not in self.running}
+        others = [p for p in procs if p.pid not in self.running]
+        self.foreign |= {p.pid for p in others}
+        self.conflicts |= {p.pid for p in others if uses_profile(p, self.paths.profile.name)}
 
     def refresh(self) -> set[int]:
-        """Update ``running`` from tasklist; returns the running foreign PIDs.
-        A PowerShell List runs only when an unclassified PID appears."""
+        """Update ``running`` from tasklist; returns the running foreign PIDs that
+        use our profile. DCS.exe processes of other profiles are ignored. A
+        PowerShell List runs only when an unclassified PID appears."""
         pids = dcs_pids()
         self.running &= pids
         self.foreign &= pids
+        self.conflicts &= pids
         if pids - self.running - self.foreign:
             self.adopt(list_processes(self.paths.profile))
-        return pids - self.running
+        return set(self.conflicts)
 
     def check(self) -> str | None:
-        """None while only our DCS runs; otherwise why the run must end."""
-        foreign = sorted(self.refresh())
+        """None while our DCS runs and no other DCS uses our profile; otherwise why
+        the run must end. A failed listing proves nothing, so it is counted and the
+        run keeps going."""
+        try:
+            foreign = sorted(self.refresh())
+        except HeadlessError as exc:
+            self.watch_failures += 1
+            self.watch_error = str(exc)
+            return None
         if foreign:
-            return f"another DCS started (PID {', '.join(map(str, foreign))}); aborting"
+            return f"another DCS started with our profile (PID {', '.join(map(str, foreign))}); aborting"
         if not self.running:
             return "DCS exited"
         return None
@@ -288,7 +314,7 @@ class Tracker:
 
 def launch(paths: Paths, *, timeout: int = LAUNCH_TIMEOUT) -> Tracker:
     """Start DCS and identify it, in one PowerShell call. Raises DcsRunning when
-    any DCS.exe is already running (nothing is started then)."""
+    a DCS.exe is already running with this profile (nothing is started then)."""
     result = call(
         paths.profile,
         "Launch",
@@ -300,7 +326,7 @@ def launch(paths: Paths, *, timeout: int = LAUNCH_TIMEOUT) -> Tracker:
     running = _procs(result.get("running"))
     if running:
         pids = ", ".join(str(p.pid) for p in running)
-        raise DcsRunning(f"DCS is already running (PID {pids}); not starting another instance")
+        raise DcsRunning(f"DCS is already running with this profile (PID {pids}); not starting another instance")
     procs = _procs(result.get("procs"))
     owned = owned_processes(paths, procs)
     if len(owned) > 1:

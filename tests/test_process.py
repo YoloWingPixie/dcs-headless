@@ -1,4 +1,5 @@
 import json
+import subprocess
 
 import pytest
 from conftest import EXE_WIN, EXPLORER_PID, LIVE_PID, LIVE_STARTED, dcs_command, dcs_proc
@@ -10,6 +11,8 @@ from dcs_headless.process import Proc, Record, Tracker, is_owned, split_command_
 from dcs_headless.profile import claim
 
 USER_GAME = dcs_proc(41236, f'"{EXE_WIN}" ', "2026-09-27T18:02:11.4410021Z")
+OTHER_PROFILE = dcs_proc(41237, dcs_command("DCS.other"), "2026-09-27T18:02:11.4410021Z")
+SAME_PROFILE = dcs_proc(41238, f'"{EXE_WIN}" -w "dcs.HEADLESS" --server', "2026-09-27T18:02:11.4410021Z")
 
 # Recorded List output: a user's normal session, a process whose command line
 # was unreadable (elevated), and our headless process.
@@ -121,12 +124,49 @@ def test_dcs_pids_parses_tasklist(monkeypatch):
     assert process.dcs_pids() == set()
 
 
-def test_ensure_idle(windows):
-    process.ensure_idle()
-    windows.procs.append(USER_GAME)
-    with pytest.raises(DcsRunning, match="41236"):
-        process.ensure_idle()
-    assert windows.calls == []
+def _flaky_run(fails):
+    calls = []
+
+    def run(argv, **kwargs):
+        calls.append(argv)
+        if len(calls) <= fails:
+            raise subprocess.CalledProcessError(
+                1, argv, stderr="<3>WSL ERROR: UtilAcceptVsock:273: accept4 failed 110\n"
+            )
+        return subprocess.CompletedProcess(argv, 0, stdout='"DCS.exe","41236","Console","1","1 K"\r\n')
+
+    return run, calls
+
+
+def test_tasklist_retries_transient_failures(monkeypatch):
+    sleeps = []
+    monkeypatch.setattr(process.time, "sleep", sleeps.append)
+    run, calls = _flaky_run(fails=2)
+    monkeypatch.setattr(process.subprocess, "run", run)
+    assert "41236" in process._tasklist()
+    assert len(calls) == 3 and sleeps == [1.0, 2.0]
+
+
+def test_tasklist_gives_up_after_three_tries(monkeypatch):
+    monkeypatch.setattr(process.time, "sleep", lambda s: None)
+    run, calls = _flaky_run(fails=3)
+    monkeypatch.setattr(process.subprocess, "run", run)
+    with pytest.raises(HeadlessError, match="tasklist.exe failed: .*accept4 failed 110"):
+        process._tasklist()
+    assert len(calls) == 3
+
+
+def test_ensure_idle_ignores_other_profiles(paths, windows):
+    process.ensure_idle(paths.profile)
+    assert windows.calls == []  # no DCS.exe: tasklist only
+    windows.procs += [USER_GAME, OTHER_PROFILE, dcs_proc(60001, "", None)]
+    process.ensure_idle(paths.profile)
+
+
+def test_ensure_idle_refuses_same_profile_any_case_and_quotes(paths, windows):
+    windows.procs += [OTHER_PROFILE, SAME_PROFILE]
+    with pytest.raises(DcsRunning, match="41238"):
+        process.ensure_idle(paths.profile)
 
 
 # Launch output recorded shape: one PowerShell call starts DCS and returns the new process.
@@ -155,9 +195,9 @@ def test_launch_is_one_call(paths, monkeypatch):
 
 
 def test_launch_refused_when_dcs_runs(paths, monkeypatch):
-    out = json.dumps({"running": [USER_GAME], "procs": []})
+    out = json.dumps({"running": [SAME_PROFILE], "procs": []})
     monkeypatch.setattr(process, "_powershell", lambda argv: out)
-    with pytest.raises(DcsRunning, match="41236"):
+    with pytest.raises(DcsRunning, match="41238"):
         process.launch(paths)
     assert process.read_record(paths.profile) is None
 
@@ -226,7 +266,7 @@ def test_child_of_exited_parent_needs_our_profile(paths, windows):
     assert tracker.check() == "DCS exited"
     # Our PID reused by another process that started a DCS.exe: not ours.
     windows.procs.append(dcs_proc(90002, f'"{EXE_WIN}"', RESTART_STARTED, parent=LIVE_PID))
-    assert tracker.check() == "another DCS started (PID 90002); aborting"
+    assert tracker.check() == "DCS exited"
     # A child that runs our profile is ours even when its parent already exited.
     tracker2 = Tracker(paths, RECORD)
     windows.procs[:] = [dcs_proc(90003, dcs_command("DCS.headless"), RESTART_STARTED, parent=LIVE_PID)]
@@ -236,18 +276,28 @@ def test_child_of_exited_parent_needs_our_profile(paths, windows):
 def test_child_started_before_parent_is_not_ours(paths, windows):
     tracker = process.launch(paths)
     windows.procs.append(dcs_proc(90004, dcs_command("DCS.headless"), "2026-09-27T00:00:00.0Z", parent=LIVE_PID))
-    assert tracker.check() == "another DCS started (PID 90004); aborting"
+    assert tracker.check() == "another DCS started with our profile (PID 90004); aborting"
 
 
-def test_foreign_dcs_is_reported_once_and_never_stopped(paths, windows):
+def test_same_profile_foreign_dcs_is_reported_once_and_never_stopped(paths, windows):
     tracker = process.launch(paths)
-    windows.procs.append(USER_GAME)
-    assert tracker.check() == "another DCS started (PID 41236); aborting"
-    assert tracker.check() == "another DCS started (PID 41236); aborting"
+    windows.procs.append(SAME_PROFILE)
+    assert tracker.check() == "another DCS started with our profile (PID 41238); aborting"
+    assert tracker.check() == "another DCS started with our profile (PID 41238); aborting"
     assert windows.actions() == ["Launch", "List"]  # classified once
     assert tracker.stop() == "exited"
     assert windows.stopped() == [LIVE_PID]
-    assert windows.procs == [USER_GAME]
+    assert windows.procs == [SAME_PROFILE]
+
+
+def test_other_profile_dcs_is_ignored(paths, windows):
+    tracker = process.launch(paths)
+    windows.procs += [USER_GAME, OTHER_PROFILE, dcs_proc(60001, "", None)]
+    assert tracker.check() is None
+    assert tracker.check() is None
+    assert windows.actions() == ["Launch", "List"]  # classified once
+    assert tracker.stop() == "exited"
+    assert windows.stopped() == [LIVE_PID]
 
 
 def test_stop_passes_verification_to_powershell(paths, windows):
@@ -285,3 +335,20 @@ def test_old_record_with_bom_is_read(paths):
         "\ufeff" + json.dumps({"pid": 1, "started": "s", "mode": "server", "command": "c"}), encoding="utf-8"
     )
     assert process.read_record(paths.profile) == Record(1, "s")
+
+
+def test_failed_listing_during_a_run_is_counted_not_fatal(paths, windows, monkeypatch):
+    tracker = process.launch(paths)
+    working = process._tasklist
+
+    def broken() -> str:
+        raise HeadlessError("tasklist.exe failed: accept4 failed 110")
+
+    monkeypatch.setattr(process, "_tasklist", broken)
+    assert tracker.check() is None
+    assert tracker.check() is None
+    assert tracker.watch_failures == 2 and "accept4" in tracker.watch_error
+    assert tracker.running == {LIVE_PID}  # state unknown: nothing assumed gone
+    monkeypatch.setattr(process, "_tasklist", working)
+    windows.procs.clear()
+    assert tracker.check() == "DCS exited"  # only a working listing ends the run

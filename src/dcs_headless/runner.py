@@ -19,7 +19,7 @@ from . import process as proc
 from .auth import copy_auth, remove_auth
 from .errors import DcsRunning, HeadlessError
 from .paths import DEFAULT_PROFILE, Paths, resolve
-from .profile import START_FAILED_REGEX, check_mission, claim, prepare
+from .profile import SERVER_PORT, START_FAILED_REGEX, check_mission, check_port, claim, prepare
 from .wait import Outcome, wait_for
 
 POLL_SECONDS = 1.0
@@ -140,30 +140,34 @@ def run(
     mission: Path | str | None = None,
     until_stopped: bool = False,
     with_grpc: bool = False,
+    port: int = SERVER_PORT,
 ) -> RunResult:
     """Prepare the isolated profile, launch DCS headless, wait for the condition,
     stop DCS, copy dcs.log and write ``result.json`` to ``out``, delete the auth files.
 
-    Refusals (DCS already running, invalid or unmarked profile, missing install,
+    Refusals (DCS already running with this profile, invalid or unmarked profile, missing install,
     bad arguments) raise HeadlessError before anything is launched. A failed run
     returns ``ok=False``. A signal raises Interrupted after cleanup.
 
     ``mission`` (a .miz) is copied into the profile's ``Missions/`` and started by
     a private dedicated server, so a map is loaded; the run fails if the server
     reports that it could not start. Without it no server or mission starts.
+    ``port`` (1024-65535, default 10408) is the server port; concurrent runs
+    with missions need different ports.
 
     ``timeout`` defaults to 600 s and ``stall_timeout`` to 120 s; a
     ``stall_timeout`` of 0 disables the stall check.
 
     ``until_stopped`` keeps DCS running with no wait condition, timeout or stall
     check (giving any of them is an error). Only a signal (Interrupted), a
-    ``fail_log`` match, DCS exiting (``ok=False``, "DCS exited") or another DCS
+    ``fail_log`` match, DCS exiting (``ok=False``, "DCS exited") or another DCS with our profile
     starting ends it.
 
     ``with_grpc`` copies the DCS-gRPC install from the auth profile into the
     isolated profile; without it any earlier copy is removed. If the auth profile
     lacks part of it, the run goes ahead without gRPC and ``warnings`` says why.
     """
+    check_port(port)
     ready = _regexes(_as_list(wait_log), "wait_log")
     fail = _regexes(_as_list(fail_log), "fail_log")
     mission_path = Path(mission) if mission is not None else None
@@ -182,7 +186,7 @@ def run(
     paths = resolve(install_dir, auth_from, profile)
     claim(paths.profile, create=True)
     wait_files = [_wait_file(paths.profile, rel) for rel in wait_rel]
-    proc.ensure_idle()
+    proc.ensure_idle(paths.profile)
     proc.clear_record(paths.profile)
     warnings = prepare(
         paths,
@@ -190,6 +194,7 @@ def run(
         options_template=Path(options_template) if options_template else None,
         mission=mission_path,
         with_grpc=with_grpc,
+        port=port,
     )
     for f in wait_files:
         f.unlink(missing_ok=True)
@@ -231,6 +236,8 @@ def run(
             state["cleanup"] = True
             errors = _cleanup(paths, tracker, launched, out)
 
+    if tracker is not None and tracker.watch_failures:
+        warnings.append(f"{tracker.watch_failures} process checks failed, skipped (last: {tracker.watch_error})")
     log = out / "dcs.log"
     result = RunResult(
         ok=outcome.ok and not errors,

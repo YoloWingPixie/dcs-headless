@@ -64,6 +64,7 @@ All commands take `--install-dir`, `--auth-from` and `--profile`.
 | `--hook FILE` | prepare, run | install into `Scripts/Hooks/`; repeatable |
 | `--options-template FILE` | prepare, run | use instead of the source profile's `options.lua` |
 | `--mission FILE.miz` | prepare, run | start this mission on a private server |
+| `--port N` | prepare, run | mission server port, 1024-65535 (default 10408); see [Missions](#missions) |
 | `--with-grpc` | prepare, run | copy the source profile's DCS-gRPC install; see [DCS-gRPC](#dcs-grpc) |
 | `--out DIR` | run | required; gets `dcs.log` and `result.json` |
 | `--wait-file REL` | run | file relative to the profile that must exist; deleted before launch; repeatable |
@@ -124,7 +125,7 @@ dump = result.profile / "DCS.Lua.Exporter" / "_G"
 run(*, profile="DCS.headless", hooks=(), out, wait_file=None, wait_log=None,
     fail_log=None, timeout=None, stall_timeout=None, install_dir=None,
     auth_from=None, options_template=None, mission=None,
-    until_stopped=False, with_grpc=False) -> RunResult
+    until_stopped=False, with_grpc=False, port=10408) -> RunResult
 ```
 
 `wait_file`, `wait_log` and `fail_log` take a string or a list of strings.
@@ -146,7 +147,7 @@ disables the stall check.
 
 Errors:
 
-- `HeadlessError` is raised before launch for: DCS already running, bad or
+- `HeadlessError` is raised before launch for: DCS already running with this profile, bad or
   reserved profile name, existing profile without the `.dcs-headless` marker,
   install not found, missing hook or `options.lua`, duplicate hook names
   (including a `DCS-gRPC.lua` hook with `with_grpc`),
@@ -193,14 +194,16 @@ runs, since the next run resets it.
 The server is built from `net.get_default_server_settings()`:
 
 - name `dcs-headless`, `isPublic = false`, `bind_address = "127.0.0.1"`,
-  port 10408, `maxPlayers = 1`, random 32-hex password per run
+  port 10408 (`--port` / `port=`, 1024-65535), `maxPlayers = 1`, random 32-hex password per run
 - single-mission list, no shuffle or loop
 - `resume_mode = RESUME_ON_LOAD`, `pause_on_load = false`,
   `pause_without_clients = false`
 
 If `net.start_server` fails, the script logs
 `DCS_HEADLESS ... net.start_server failed with code N` and the run fails on
-that line. Hooks get `onSimulationStart` once the mission is running.
+that line. Runs that use different profiles can run at the same time, but each
+mission run needs its own `--port`: a second run on a taken port fails on that
+line. Hooks get `onSimulationStart` once the mission is running.
 
 ## DCS-gRPC
 
@@ -230,7 +233,7 @@ timeout or stall check; `--wait-file`, `--wait-log`, `--timeout` and
 
 `result.json` is written on every path. In the library, a call from a thread
 other than the main one installs no signal handlers, so only DCS exiting, a
-`fail_log` match or another DCS ends it.
+`fail_log` match or another DCS with our profile ends it.
 
 Tasks (`PROFILE` defaults to `DCS.headless`; arguments after `--` are passed
 to `dcs-headless`):
@@ -262,14 +265,21 @@ deletes them. `.gitignore` excludes `authdata.bin`, `network.vault` and
 
 dcs-headless only stops DCS processes it started.
 
-- `prepare` and `run` refuse while any `DCS.exe` is running, and launch checks
-  again in the same PowerShell call that starts DCS.
+- Several runs may use DCS at the same time, each with its own `--profile`.
+  Only a `DCS.exe` whose command line has `-w <profile>` (any case, quoted or
+  not) is a conflict; DCS processes of other profiles, and rows whose command
+  line cannot be read, are ignored.
+- `prepare` and `run` refuse while a `DCS.exe` runs with this profile, and
+  launch checks again in the same PowerShell call that starts DCS. That call
+  accepts only a process started after it whose command line is `-w <profile>
+  --server --norender`.
 - The launched process must be `<install>\bin-mt\DCS.exe` with exactly one
   `-w <profile>`, plus `--server` and `--norender`. Its PID and start time go
   in `<profile>/run/process.json`. A `DCS.exe` started by it (DCS restarting
   itself) is also treated as ours.
-- During a run `tasklist.exe` is checked every 3 s. If any other `DCS.exe`
-  appears, the run aborts and stops only its own process.
+- During a run `tasklist.exe` is checked every 3 s. If another `DCS.exe`
+  appears with our profile and is not ours, the run aborts and stops only its
+  own process. DCS processes of other profiles never end a run.
 - Before each `Stop-Process`, `control.ps1` re-checks the PID's name, start
   time and command line (or parent). On mismatch it refuses.
 - Refused profiles: `DCS`, `DCS.openbeta`, `DCS.openalpha`,

@@ -123,9 +123,14 @@ def _remove(path: Path) -> None:
         path.unlink(missing_ok=True)
 
 
-def mission_server_lua(mission_rel: str, password: str) -> str:
+def check_port(port: int) -> None:
+    if isinstance(port, bool) or not isinstance(port, int) or not 1024 <= port <= 65535:
+        raise HeadlessError(f"port must be an integer from 1024 to 65535, got {port!r}")
+
+
+def mission_server_lua(mission_rel: str, password: str, port: int = SERVER_PORT) -> str:
     return MISSION_SERVER_LUA.format(
-        mission=lua_string(mission_rel), password=lua_string(password), port=SERVER_PORT, failed=START_FAILED
+        mission=lua_string(mission_rel), password=lua_string(password), port=port, failed=START_FAILED
     )
 
 
@@ -136,6 +141,7 @@ def prepare(
     options_template: Path | None = None,
     mission: Path | None = None,
     with_grpc: bool = False,
+    port: int = SERVER_PORT,
 ) -> list[str]:
     """Reset the claimed isolated profile for a launch.
 
@@ -153,8 +159,9 @@ def prepare(
 
     Without ``mission`` the dedicatedServer.lua starts nothing. With it, the .miz
     is copied to ``Missions/`` and dedicatedServer.lua starts a private server
-    (loopback, not public, random password) running it.
+    (loopback, not public, random password, ``port``) running it.
     """
+    check_port(port)
     if mission is not None:
         check_mission(mission)
     names = [h.name for h in hooks] + ([Path(GRPC_HOOK).name] if with_grpc else [])
@@ -184,7 +191,7 @@ def prepare(
     if mission is not None:
         missions.mkdir()
         shutil.copyfile(mission, missions / mission.name)
-        server_lua = mission_server_lua(f"Missions/{mission.name}", secrets.token_hex(16))
+        server_lua = mission_server_lua(f"Missions/{mission.name}", secrets.token_hex(16), port)
 
     scripts = profile / "Scripts"
     scripts.mkdir(exist_ok=True)
